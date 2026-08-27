@@ -1,0 +1,8 @@
+name: ci
+on: { push: { branches: [main, develop] }, pull_request: { branches: [main, develop] } }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "ci placeholder"
