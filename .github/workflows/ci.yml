@@ -26,10 +26,12 @@ jobs:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
           restore-keys: ${{ runner.os }}-nuget-
+      - name: Restore
+        run: dotnet restore Gateway.sln
       - name: Format check
-        run: dotnet format --verify-no-changes Gateway.sln
+        run: dotnet format --verify-no-changes Gateway.sln --no-restore
       - name: Build
-        run: dotnet build Gateway.sln --warnaserror
+        run: dotnet build Gateway.sln --warnaserror --no-restore
 
   image:
     needs: build
