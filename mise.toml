@@ -1,2 +1,18 @@
 [tools]
 dotnet = "10.0.100"
+
+[tasks.build]
+run = "dotnet build Gateway.sln --warnaserror"
+description = "Build"
+
+[tasks.format]
+run = "dotnet format --verify-no-changes"
+description = "Format check"
+
+[tasks.run]
+run = "dotnet run --project src/Gateway.Api/Gateway.Api.csproj"
+description = "Run gateway locally"
+
+[tasks.verify]
+run = "ls -1 ../job-platform-*/.env | wc -l"
+description = "Verify env sync"
