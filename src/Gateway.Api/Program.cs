@@ -19,12 +19,24 @@ if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
     jwt.Secret = "dev-jwt-secret-change-me-32chars-min";
 }
 
-// Allow override via env GATEWAY_UPSTREAM_AUTH for prod Render public URL
+// Allow override via env GATEWAY_UPSTREAM_* for prod Render public URLs
 var upstreamAuth = builder.Configuration["GATEWAY_UPSTREAM_AUTH"] ?? "http://localhost:5001";
 if (!string.IsNullOrEmpty(upstreamAuth))
 {
     // override cluster destination at runtime via config binding
     builder.Configuration["ReverseProxy:Clusters:auth:Destinations:auth1:Address"] = upstreamAuth;
+}
+
+var upstreamJob = builder.Configuration["GATEWAY_UPSTREAM_JOB"];
+if (!string.IsNullOrEmpty(upstreamJob))
+{
+    builder.Configuration["ReverseProxy:Clusters:job:Destinations:job1:Address"] = upstreamJob;
+}
+
+var upstreamSearch = builder.Configuration["GATEWAY_UPSTREAM_SEARCH"];
+if (!string.IsNullOrEmpty(upstreamSearch))
+{
+    builder.Configuration["ReverseProxy:Clusters:search:Destinations:search1:Address"] = upstreamSearch;
 }
 
 // CORS
