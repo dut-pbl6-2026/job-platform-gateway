@@ -144,6 +144,17 @@ builder.Services.AddEndpointsApiExplorer();
 var app = builder.Build();
 
 app.UseForwardedHeaders();
+
+app.Use(async (context, next) => {
+  context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
+  context.Response.Headers.Append("X-Frame-Options", "DENY");
+  context.Response.Headers.Append("Referrer-Policy", "no-referrer");
+  if(!app.Environment.IsDevelopment()){
+    context.Response.Headers.Append("Strict-Transport-Security", "max-age=2592000");
+  }
+  await next();
+});
+
 app.UseCors("Default");
 app.UseRateLimiter();
 app.UseAuthentication();
