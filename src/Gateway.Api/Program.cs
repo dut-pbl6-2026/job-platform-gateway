@@ -39,6 +39,18 @@ if (!string.IsNullOrEmpty(upstreamSearch))
     builder.Configuration["ReverseProxy:Clusters:search:Destinations:search1:Address"] = upstreamSearch;
 }
 
+var upstreamApp = builder.Configuration["GATEWAY_UPSTREAM_APP"];
+if (!string.IsNullOrEmpty(upstreamApp))
+{
+    builder.Configuration["ReverseProxy:Clusters:app:Destinations:app1:Address"] = upstreamApp;
+}
+
+var upstreamProfile = builder.Configuration["GATEWAY_UPSTREAM_PROFILE"];
+if (!string.IsNullOrEmpty(upstreamProfile))
+{
+    builder.Configuration["ReverseProxy:Clusters:profile:Destinations:profile1:Address"] = upstreamProfile;
+}
+
 // CORS
 var corsOrigins = builder.Configuration["CORS_ORIGINS"] ?? "http://localhost:5173,http://localhost:3000,https://jp-web.vercel.app,https://job-platform-web.vercel.app";
 var origins = corsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -59,9 +71,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ClockSkew = TimeSpan.FromSeconds(30)
         };
         // Let gateway authenticate but not require auth globally; YARP will forward 401 as 401
-        // Anonymous routes (login/register/refresh) remain accessible.
+        // Anonymous routes (auth login/register/refresh, job browsing, search) remain accessible.
+        // Protected YARP routes opt in via AuthorizationPolicy "Authenticated".
     });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("Authenticated", policy => policy.RequireAuthenticatedUser());
 
 // ForwardedHeaders — behind Render edge so RemoteIpAddress reflects the real
 // client IP (required for the per-IP limiter below to partition correctly).
