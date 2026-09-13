@@ -148,14 +148,18 @@ app.UseForwardedHeaders();
 // Security Headers Middleware - Centralized security response headers
 app.Use(async (context, next) =>
 {
-    context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
-    context.Response.Headers.Append("X-Frame-Options", "DENY");
-    context.Response.Headers.Append("Referrer-Policy", "no-referrer");
+    // Authoritative indexer assignment to avoid duplicate headers from downstream YARP proxies
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'";
 
-    if (!app.Environment.IsDevelopment())
+    // Enforce HSTS (30 days) per RFC 6797: only over HTTPS connections in non-Development environments
+    if (!app.Environment.IsDevelopment() && context.Request.IsHttps)
     {
-        context.Response.Headers.Append("Strict-Transport-Security", "max-age=2592000");
+        context.Response.Headers["Strict-Transport-Security"] = "max-age=2592000";
     }
+
     await next();
 });
 
