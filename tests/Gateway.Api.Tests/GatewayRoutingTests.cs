@@ -129,6 +129,20 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PublicProfileRoute_WithoutToken_ForwardsToProfileCluster()
+    {
+        using var client = CreateClient();
+        var userId = Guid.NewGuid();
+
+        // PROFILE-01-06: GET /api/profiles/{userId:guid} is public (no PII).
+        var response = await client.GetAsync($"/api/profiles/{userId}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains($"/api/profiles/{userId}", body);
+    }
+
+    [Fact]
     public async Task ProtectedRoute_WithValidToken_ForwardsAndInjectsUserHeaders()
     {
         using var client = CreateClient();
@@ -184,6 +198,12 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         // status-flow must stay anonymous (exact match, no policy) while the
         // apps catch-all stays protected.
         Assert.Null(routes["app-status-flow"].AuthorizationPolicy);
+
+        // PROFILE-01-06: GET /api/profiles/{userId:guid} stays anonymous while
+        // the profiles catch-all (/me, skills, experiences, ...) stays protected.
+        Assert.Equal("profile", routes["public-profile"].ClusterId);
+        Assert.Null(routes["public-profile"].AuthorizationPolicy);
+        Assert.Equal("/api/profiles/{userId:guid}", routes["public-profile"].Match.Path);
 
         var clusters = config.Clusters.ToDictionary(c => c.ClusterId);
         Assert.True(clusters.ContainsKey("app"));

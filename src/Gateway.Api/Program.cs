@@ -20,7 +20,7 @@ if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
 }
 
 // Allow override via env GATEWAY_UPSTREAM_* for prod Render public URLs
-var upstreamAuth = builder.Configuration["GATEWAY_UPSTREAM_AUTH"] ?? "http://localhost:5001";
+var upstreamAuth = builder.Configuration["GATEWAY_UPSTREAM_AUTH"];
 if (!string.IsNullOrEmpty(upstreamAuth))
 {
     // override cluster destination at runtime via config binding
