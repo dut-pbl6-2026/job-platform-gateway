@@ -53,6 +53,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
 
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_PROFILE", _stubAddress);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_APP", _stubAddress);
+        Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_NOTIF", _stubAddress);
 
         _factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(b => b.UseEnvironment("Development"));
@@ -63,6 +64,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         _factory.Dispose();
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_PROFILE", null);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_APP", null);
+        Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_NOTIF", null);
         await _stub.DisposeAsync();
     }
 
@@ -107,6 +109,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     [Theory]
     [InlineData("/api/profiles/me")]
     [InlineData("/api/applications/me")]
+    [InlineData("/api/notifications/history?page=1&size=5")]
     public async Task ProtectedRoute_WithoutToken_Returns401(string path)
     {
         using var client = CreateClient();
@@ -142,17 +145,20 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Contains($"/api/profiles/{userId}", body);
     }
 
-    [Fact]
-    public async Task ProtectedRoute_WithValidToken_ForwardsAndInjectsUserHeaders()
+    [Theory]
+    [InlineData("/api/profiles/me")]
+    [InlineData("/api/notifications/history")]
+    public async Task ProtectedRoute_WithValidToken_ForwardsAndInjectsUserHeaders(string path)
     {
         using var client = CreateClient();
         var token = CreateToken(sub: "user-abc", role: "Recruiter");
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        var response = await client.GetAsync("/api/profiles/me");
+        var response = await client.GetAsync(path);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains($"\"path\":\"{path}\"", body);
         Assert.Contains("\"userId\":\"user-abc\"", body);
         Assert.Contains("\"userRole\":\"Recruiter\"", body);
     }
@@ -194,6 +200,8 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Equal("Authenticated", routes["apps"].AuthorizationPolicy);
         Assert.Equal("profile", routes["profiles"].ClusterId);
         Assert.Equal("Authenticated", routes["profiles"].AuthorizationPolicy);
+        Assert.Equal("notif", routes["notifications"].ClusterId);
+        Assert.Equal("Authenticated", routes["notifications"].AuthorizationPolicy);
 
         // status-flow must stay anonymous (exact match, no policy) while the
         // apps catch-all stays protected.
@@ -208,7 +216,9 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         var clusters = config.Clusters.ToDictionary(c => c.ClusterId);
         Assert.True(clusters.ContainsKey("app"));
         Assert.True(clusters.ContainsKey("profile"));
+        Assert.True(clusters.ContainsKey("notif"));
         Assert.Contains(clusters["app"].Destinations!, d => d.Value.Address == _stubAddress);
         Assert.Contains(clusters["profile"].Destinations!, d => d.Value.Address == _stubAddress);
+        Assert.Contains(clusters["notif"].Destinations!, d => d.Value.Address == _stubAddress);
     }
 }
