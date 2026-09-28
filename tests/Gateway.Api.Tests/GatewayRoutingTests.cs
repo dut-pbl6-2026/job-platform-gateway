@@ -145,17 +145,20 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Contains($"/api/profiles/{userId}", body);
     }
 
-    [Fact]
-    public async Task ProtectedRoute_WithValidToken_ForwardsAndInjectsUserHeaders()
+    [Theory]
+    [InlineData("/api/profiles/me")]
+    [InlineData("/api/notifications/history")]
+    public async Task ProtectedRoute_WithValidToken_ForwardsAndInjectsUserHeaders(string path)
     {
         using var client = CreateClient();
         var token = CreateToken(sub: "user-abc", role: "Recruiter");
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        var response = await client.GetAsync("/api/profiles/me");
+        var response = await client.GetAsync(path);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains($"\"path\":\"{path}\"", body);
         Assert.Contains("\"userId\":\"user-abc\"", body);
         Assert.Contains("\"userRole\":\"Recruiter\"", body);
     }
