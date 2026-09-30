@@ -140,6 +140,7 @@ builder.Services.AddReverseProxy()
     });
 
 builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddHttpClient();
 
 var app = builder.Build();
 
@@ -168,7 +169,55 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "gateway" }));
+var StartTime = DateTime.UtcNow;
+
+var healthHandler = async (IConfiguration config, IHttpClientFactory clientFactory) => 
+{
+    var upstreams = new Dictionary<string, string>
+    {
+        { "auth", config["GATEWAY_UPSTREAM_AUTH"] ?? "http://localhost:5001" },
+        { "job", config["GATEWAY_UPSTREAM_JOB"] ?? "http://localhost:5002" },
+        { "search", config["GATEWAY_UPSTREAM_SEARCH"] ?? "http://localhost:5003" },
+        { "app", config["GATEWAY_UPSTREAM_APP"] ?? "http://localhost:5004" },
+        { "profile", config["GATEWAY_UPSTREAM_PROFILE"] ?? "http://localhost:5005" },
+        { "notif", config["GATEWAY_UPSTREAM_NOTIF"] ?? "http://localhost:5006" }
+    };
+
+    var client = clientFactory.CreateClient();
+    client.Timeout = TimeSpan.FromSeconds(3);
+
+    var tasks = upstreams.Select(async u => 
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        string status = "DOWN";
+        try 
+        {
+            var response = await client.GetAsync($"{u.Value}/health");
+            if (response.IsSuccessStatusCode)
+            {
+                status = "UP";
+            }
+        }
+        catch { }
+        sw.Stop();
+        
+        return new { name = u.Key, status, latencyMs = sw.ElapsedMilliseconds, url = u.Value };
+    }).ToList();
+
+    var results = await Task.WhenAll(tasks);
+    bool allUp = results.All(r => r.status == "UP");
+
+    return Results.Ok(new 
+    {
+        status = allUp ? "UP" : "DEGRADED",
+        version = "0.1.0",
+        uptimeSeconds = (long)(DateTime.UtcNow - StartTime).TotalSeconds,
+        services = results
+    });
+};
+
+app.MapGet("/health", healthHandler);
+app.MapGet("/api/health", healthHandler);
 app.MapGet("/", () => Results.Ok(new { service = "gateway", version = "0.1.0" }));
 
 app.MapReverseProxy();
