@@ -185,7 +185,7 @@ app.UseAuthorization();
 
 var StartTime = DateTime.UtcNow;
 
-var healthHandler = async (IConfiguration config, IHttpClientFactory clientFactory) => 
+var healthHandler = async (IConfiguration config, IHttpClientFactory clientFactory) =>
 {
     var upstreams = new Dictionary<string, string>
     {
@@ -200,11 +200,11 @@ var healthHandler = async (IConfiguration config, IHttpClientFactory clientFacto
     var client = clientFactory.CreateClient();
     client.Timeout = TimeSpan.FromSeconds(3);
 
-    var tasks = upstreams.Select(async u => 
+    var tasks = upstreams.Select(async u =>
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         string status = "DOWN";
-        try 
+        try
         {
             var response = await client.GetAsync($"{u.Value}/health");
             if (response.IsSuccessStatusCode)
@@ -214,14 +214,14 @@ var healthHandler = async (IConfiguration config, IHttpClientFactory clientFacto
         }
         catch { }
         sw.Stop();
-        
+
         return new { name = u.Key, status, latencyMs = sw.ElapsedMilliseconds, url = u.Value };
     }).ToList();
 
     var results = await Task.WhenAll(tasks);
     bool allUp = results.All(r => r.status == "UP");
 
-    return Results.Ok(new 
+    return Results.Ok(new
     {
         status = allUp ? "UP" : "DEGRADED",
         version = "0.1.0",
