@@ -6,8 +6,12 @@ run = "dotnet build Gateway.sln --warnaserror"
 description = "Build"
 
 [tasks.format]
-run = "dotnet format --verify-no-changes"
+run = "dotnet format --verify-no-changes Gateway.sln"
 description = "Format check"
+
+[tasks.test]
+run = "dotnet test Gateway.sln"
+description = "Run tests"
 
 [tasks.run]
 run = "dotnet run --project src/Gateway.Api/Gateway.Api.csproj"

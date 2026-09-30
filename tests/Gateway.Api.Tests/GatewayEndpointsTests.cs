@@ -2,7 +2,7 @@ using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 
-namespace Gateway.Tests;
+namespace Gateway.Api.Tests;
 
 public class GatewayEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
 {

@@ -20,7 +20,7 @@ if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
 }
 
 // Allow override via env GATEWAY_UPSTREAM_* for prod Render public URLs
-var upstreamAuth = builder.Configuration["GATEWAY_UPSTREAM_AUTH"] ?? "http://localhost:5001";
+var upstreamAuth = builder.Configuration["GATEWAY_UPSTREAM_AUTH"];
 if (!string.IsNullOrEmpty(upstreamAuth))
 {
     // override cluster destination at runtime via config binding
@@ -37,6 +37,18 @@ var upstreamSearch = builder.Configuration["GATEWAY_UPSTREAM_SEARCH"];
 if (!string.IsNullOrEmpty(upstreamSearch))
 {
     builder.Configuration["ReverseProxy:Clusters:search:Destinations:search1:Address"] = upstreamSearch;
+}
+
+var upstreamApp = builder.Configuration["GATEWAY_UPSTREAM_APP"];
+if (!string.IsNullOrEmpty(upstreamApp))
+{
+    builder.Configuration["ReverseProxy:Clusters:app:Destinations:app1:Address"] = upstreamApp;
+}
+
+var upstreamProfile = builder.Configuration["GATEWAY_UPSTREAM_PROFILE"];
+if (!string.IsNullOrEmpty(upstreamProfile))
+{
+    builder.Configuration["ReverseProxy:Clusters:profile:Destinations:profile1:Address"] = upstreamProfile;
 }
 
 // CORS
@@ -59,9 +71,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ClockSkew = TimeSpan.FromSeconds(30)
         };
         // Let gateway authenticate but not require auth globally; YARP will forward 401 as 401
-        // Anonymous routes (login/register/refresh) remain accessible.
+        // Anonymous routes (auth login/register/refresh, job browsing, search) remain accessible.
+        // Protected YARP routes opt in via AuthorizationPolicy "Authenticated".
     });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("Authenticated", policy => policy.RequireAuthenticatedUser());
 
 // ForwardedHeaders — behind Render edge so RemoteIpAddress reflects the real
 // client IP (required for the per-IP limiter below to partition correctly).

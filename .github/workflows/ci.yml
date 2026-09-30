@@ -32,6 +32,8 @@ jobs:
         run: dotnet format --verify-no-changes Gateway.sln --no-restore
       - name: Build
         run: dotnet build Gateway.sln --warnaserror --no-restore
+      - name: Test
+        run: dotnet test Gateway.sln --no-build --no-restore
 
   image:
     needs: build
