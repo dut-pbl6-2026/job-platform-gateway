@@ -1,0 +1,78 @@
+name: shared-contract
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest:
+    name: Shared latest contract
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+
+      - name: Checkout latest shared main
+        uses: actions/checkout@v4
+        with:
+          repository: dut-pbl6-2026/job-platform-shared
+          ref: main
+          path: _shared
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.100"
+
+      - name: Pack latest shared
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="0.0.0-contract.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          echo "CONTRACT_SHARED_VERSION=$version" >> "$GITHUB_ENV"
+
+          dotnet pack \
+            _shared/src/SharedKernel/SharedKernel.csproj \
+            -c Release \
+            -p:Version="$version" \
+            -o local-feed
+
+          echo "Shared commit: $(git -C _shared rev-parse HEAD)"
+
+      - name: Restore contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet restore \
+            tests/SharedContract.Tests/SharedContract.Tests.csproj \
+            -p:ContractSharedVersion="$CONTRACT_SHARED_VERSION" \
+            --packages "$RUNNER_TEMP/contract-packages"
+
+      - name: Verify contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet test \
+            tests/SharedContract.Tests/SharedContract.Tests.csproj \
+            -p:ContractSharedVersion="$CONTRACT_SHARED_VERSION" \
+            --no-restore \
+            --logger trx
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-contract-results
+          path: tests/SharedContract.Tests/TestResults/**/*.trx
+          if-no-files-found: ignore
