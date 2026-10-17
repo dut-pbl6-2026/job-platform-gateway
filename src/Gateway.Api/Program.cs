@@ -51,6 +51,12 @@ if (!string.IsNullOrEmpty(upstreamProfile))
     builder.Configuration["ReverseProxy:Clusters:profile:Destinations:profile1:Address"] = upstreamProfile;
 }
 
+var upstreamNotif = builder.Configuration["GATEWAY_UPSTREAM_NOTIF"];
+if (!string.IsNullOrEmpty(upstreamNotif))
+{
+    builder.Configuration["ReverseProxy:Clusters:notif:Destinations:notif1:Address"] = upstreamNotif;
+}
+
 // CORS
 var corsOrigins = builder.Configuration["CORS_ORIGINS"] ?? "http://localhost:5173,http://localhost:3000,https://jp-web.vercel.app,https://job-platform-web.vercel.app";
 var origins = corsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
