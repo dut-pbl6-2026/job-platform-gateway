@@ -1,11 +1,15 @@
+using System.Globalization;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
+using Gateway.Api.TokenRevocation;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using SharedKernel;
+using StackExchange.Redis;
 using Yarp.ReverseProxy.Transforms;
-using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -62,6 +66,30 @@ var corsOrigins = builder.Configuration["CORS_ORIGINS"] ?? "http://localhost:517
 var origins = corsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 builder.Services.AddCors(o => o.AddPolicy("Default", p => p.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
+// Access-token revocation store (Redis when configured). Without REDIS_URL the
+// gateway cannot detect revoked tokens; that is only acceptable outside Production.
+var redisUrl = builder.Configuration["REDIS_URL"];
+if (!string.IsNullOrWhiteSpace(redisUrl))
+{
+    var redisOptions = ConfigurationOptions.Parse(redisUrl);
+    var redisPassword = builder.Configuration["REDIS_PASSWORD"];
+    if (!string.IsNullOrWhiteSpace(redisPassword))
+        redisOptions.Password = redisPassword;
+    if (int.TryParse(builder.Configuration["REDIS_DB"], out var redisDb))
+        redisOptions.DefaultDatabase = redisDb;
+    redisOptions.AbortOnConnectFail = false;
+
+    builder.Services.AddStackExchangeRedisCache(o => o.ConfigurationOptions = redisOptions);
+    builder.Services.AddSingleton<ITokenRevocationStore, RedisTokenRevocationStore>();
+}
+else
+{
+    if (builder.Environment.IsProduction())
+        throw new InvalidOperationException("REDIS_URL missing — required for access-token revocation (PORT-05 fail-fast)");
+
+    builder.Services.AddSingleton<ITokenRevocationStore, NoopTokenRevocationStore>();
+}
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
     {
@@ -79,6 +107,45 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         // Let gateway authenticate but not require auth globally; YARP will forward 401 as 401
         // Anonymous routes (auth login/register/refresh, job browsing, search) remain accessible.
         // Protected YARP routes opt in via AuthorizationPolicy "Authenticated".
+        o.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var principal = context.Principal;
+                var subject = principal?.FindFirstValue(ClaimTypes.NameIdentifier)
+                              ?? principal?.FindFirstValue(JwtRegisteredClaimNames.Sub);
+                if (principal is null || !Guid.TryParse(subject, out var userId))
+                    return;
+
+                var issuedAt = GetIssuedAt(principal);
+                var logger = context.HttpContext.RequestServices
+                    .GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("TokenRevocation");
+
+                try
+                {
+                    var store = context.HttpContext.RequestServices
+                        .GetRequiredService<ITokenRevocationStore>();
+                    var revokedAfter = await store.GetRevokedAfterAsync(
+                        userId, context.HttpContext.RequestAborted);
+
+                    if (revokedAfter is not null && issuedAt <= revokedAfter.Value.ToUnixTimeSeconds())
+                    {
+                        logger.LogWarning(
+                            "Rejected revoked access token for user {UserId} (iat={IssuedAt}, revokedAfter={RevokedAfter})",
+                            userId,
+                            issuedAt,
+                            revokedAfter.Value.ToUnixTimeSeconds());
+                        context.Fail("Access token revoked");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Fail open on revocation-store outage: signature/lifetime were already validated.
+                    logger.LogWarning(ex, "Token revocation check failed for user {UserId}", userId);
+                }
+            }
+        };
     });
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Authenticated", policy => policy.RequireAuthenticatedUser());
@@ -243,5 +310,15 @@ app.MapGet("/", () => Results.Ok(new { service = "gateway", version = "0.1.0" })
 app.MapReverseProxy();
 
 app.Run();
+
+static long GetIssuedAt(ClaimsPrincipal principal)
+{
+    var raw = principal.FindFirst(JwtRegisteredClaimNames.Iat)?.Value;
+    if (long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var issuedAt))
+        return issuedAt;
+
+    // Missing iat is treated as epoch 0 so an existing revocation entry still rejects the token.
+    return 0;
+}
 
 public partial class Program { }

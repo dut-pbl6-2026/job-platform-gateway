@@ -3,11 +3,13 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text;
+using Gateway.Api.TokenRevocation;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.Tokens;
 using Xunit;
 using Yarp.ReverseProxy.Configuration;
@@ -76,7 +78,8 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         string issuer = Issuer,
         string audience = Audience,
         TimeSpan? lifetime = null,
-        TimeSpan? notBefore = null)
+        TimeSpan? notBefore = null,
+        bool includeIssuedAt = true)
     {
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Secret));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
@@ -86,6 +89,12 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
             new(ClaimTypes.Role, role),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
+        if (includeIssuedAt)
+            claims.Add(new Claim(
+                JwtRegisteredClaimNames.Iat,
+                EpochTime.GetIntDate(DateTime.UtcNow).ToString(),
+                ClaimValueTypes.Integer64));
+
         var token = new JwtSecurityToken(
             issuer: issuer,
             audience: audience,
@@ -95,6 +104,18 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
             signingCredentials: credentials);
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
+
+    private static WebApplicationFactory<Program> CreateFactoryWithStore(ITokenRevocationStore store) =>
+        new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(b =>
+            {
+                b.UseEnvironment("Development");
+                b.ConfigureServices(services =>
+                {
+                    services.RemoveAll<ITokenRevocationStore>();
+                    services.AddSingleton(store);
+                });
+            });
 
     [Fact]
     public async Task Health_ReturnsOk()
@@ -178,6 +199,54 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ProtectedRoute_WithRevokedToken_Returns401()
+    {
+        var store = new FakeRevocationStore { RevokedAfter = DateTimeOffset.UtcNow.AddMinutes(1) };
+        using var factory = CreateFactoryWithStore(store);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", CreateToken(sub: Guid.NewGuid().ToString()));
+
+        var response = await client.GetAsync("/api/profiles/me");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_WithTokenIssuedAfterRevocation_Returns200()
+    {
+        var store = new FakeRevocationStore { RevokedAfter = DateTimeOffset.UtcNow.AddMinutes(-10) };
+        using var factory = CreateFactoryWithStore(store);
+        using var client = factory.CreateClient();
+        var sub = Guid.NewGuid().ToString();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", CreateToken(sub: sub, role: "Recruiter"));
+
+        var response = await client.GetAsync("/api/profiles/me");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains($"\"userId\":\"{sub}\"", body);
+        Assert.Contains("\"userRole\":\"Recruiter\"", body);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_WithRevokedTokenMissingIat_Returns401()
+    {
+        var store = new FakeRevocationStore { RevokedAfter = DateTimeOffset.UtcNow.AddMinutes(-30) };
+        using var factory = CreateFactoryWithStore(store);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue(
+                "Bearer",
+                CreateToken(sub: Guid.NewGuid().ToString(), includeIssuedAt: false));
+
+        var response = await client.GetAsync("/api/profiles/me");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task ProtectedRoute_WithWrongIssuer_Returns401()
     {
         using var client = CreateClient();
@@ -220,5 +289,13 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Contains(clusters["app"].Destinations!, d => d.Value.Address == _stubAddress);
         Assert.Contains(clusters["profile"].Destinations!, d => d.Value.Address == _stubAddress);
         Assert.Contains(clusters["notif"].Destinations!, d => d.Value.Address == _stubAddress);
+    }
+
+    private sealed class FakeRevocationStore : ITokenRevocationStore
+    {
+        public DateTimeOffset? RevokedAfter { get; set; }
+
+        public Task<DateTimeOffset?> GetRevokedAfterAsync(Guid userId, CancellationToken ct = default) =>
+            Task.FromResult(RevokedAfter);
     }
 }
