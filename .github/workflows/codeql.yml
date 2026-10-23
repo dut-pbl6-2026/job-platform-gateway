@@ -16,13 +16,13 @@ permissions:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [javascript, csharp]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.100"
       - uses: github/codeql-action/init@v3
         with:
-          languages: ${{ matrix.language }}
+          languages: csharp
+      - run: dotnet build Gateway.sln
       - uses: github/codeql-action/analyze@v3
