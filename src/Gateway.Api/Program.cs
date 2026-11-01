@@ -85,7 +85,10 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Authenticated", policy => policy.RequireAuthenticatedUser())
-    .AddPolicy("Admin", policy => policy.RequireClaim(ClaimTypes.Role, "Admin"));
+    .AddPolicy("Admin", policy => policy.RequireClaim(ClaimTypes.Role, "Admin"))
+    // Role names mirror auth-svc ("User" = candidate, "Recruiter") and job-svc's own checks.
+    .AddPolicy("Recruiter", policy => policy.RequireClaim(ClaimTypes.Role, "Recruiter"))
+    .AddPolicy("User", policy => policy.RequireClaim(ClaimTypes.Role, "User"));
 
 // ForwardedHeaders — behind Render edge so RemoteIpAddress reflects the real
 // client IP (required for the per-IP limiter below to partition correctly).
