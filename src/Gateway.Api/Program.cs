@@ -3,11 +3,14 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
+using Gateway.Api.Observability;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using SharedKernel;
 using Yarp.ReverseProxy.Transforms;
 using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddObservability();
 
 // JWT
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
@@ -138,6 +141,13 @@ builder.Services.AddReverseProxy()
             utc.ProxyRequest.Headers.Remove("X-User-Id");
             utc.ProxyRequest.Headers.Remove("X-User-Role");
 
+            // Propagate the (validated/generated) correlation id to upstream services.
+            utc.ProxyRequest.Headers.Remove(CorrelationIdMiddleware.HeaderName);
+            if (utc.HttpContext.Items[CorrelationIdMiddleware.ItemKey] is string correlationId)
+            {
+                utc.ProxyRequest.Headers.TryAddWithoutValidation(CorrelationIdMiddleware.HeaderName, correlationId);
+            }
+
             if (user.Identity?.IsAuthenticated == true)
             {
                 var sub = user.FindFirst("sub")?.Value
@@ -160,11 +170,18 @@ builder.Services.AddReverseProxy()
         });
     });
 
+// /health = existing liveness/upstream summary (Render healthCheckPath); /health/ready = readiness checks.
+var healthChecks = builder.Services.AddHealthChecks()
+    .AddCheck<ProxyConfigHealthCheck>("proxy-config", tags: [HealthCheckTags.Ready]);
+if (string.Equals(builder.Configuration["HEALTH_READY_CHECK_UPSTREAMS"], "true", StringComparison.OrdinalIgnoreCase))
+    healthChecks.AddCheck<UpstreamsHealthCheck>("upstreams", tags: [HealthCheckTags.Ready]);
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHttpClient();
 
 var app = builder.Build();
 
+app.UseObservability();
 app.UseForwardedHeaders();
 
 // Security Headers Middleware - Centralized security response headers
@@ -239,6 +256,11 @@ var healthHandler = async (IConfiguration config, IHttpClientFactory clientFacto
 
 app.MapGet("/health", healthHandler);
 app.MapGet("/api/health", healthHandler);
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = r => r.Tags.Contains(HealthCheckTags.Ready),
+    ResponseWriter = HealthCheckResponseWriter.WriteAsync
+});
 app.MapGet("/", () => Results.Ok(new { service = "gateway", version = "0.1.0" }));
 
 app.MapReverseProxy();
