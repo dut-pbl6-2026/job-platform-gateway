@@ -5,14 +5,9 @@
 - Jira PBL6 skid.atlassian.net, Master plan docs/master-plan.md
 - TM: TM1 Hoai, TM2 Thanh, TM3 Chi Bao, TM4 Khoa
 
-## Deploy (Render Free jp-gateway — TM1 Hoai)
-- Service: `jp-gateway` `https://jp-gateway.onrender.com` `5000` YARP `GATEWAY_UPSTREAM_AUTH=https://jp-auth.onrender.com` + `jp-job/search/app/profile/notif` via `https://jp-*.onrender.com` (Free no private network)
-- Env: `JWT_SECRET` `CORS_ORIGINS=https://jp-web.vercel.app` `GATEWAY_UPSTREAM_*`
-- Hook: `RENDER_DEPLOY_HOOK_GATEWAY` → `push main` auto
-
 ## Health, logging, quality
 
-- `GET /health` (and `/api/health`) — existing aggregated upstream status JSON, used by Render `healthCheckPath`.
+- `GET /health` (and `/api/health`) — existing aggregated upstream status JSON.
 - `GET /health/ready` — readiness: proxy routes/clusters loaded. Set `HEALTH_READY_CHECK_UPSTREAMS=true` to also probe upstream `/health` endpoints (reported as `Degraded`, never fails readiness).
 - Logging: Serilog, compact JSON on console outside Development. Every request gets an `X-Correlation-Id` (taken from the request if safe, generated otherwise, echoed in the response, attached to log lines). Authorization headers/tokens are never logged.
 - SonarCloud (optional): CI runs `dotnet-sonarscanner` only when the `SONAR_TOKEN` secret is available (skipped on fork PRs). Optional repo variables `SONAR_ORGANIZATION` (default `dut-pbl6-2026`) and `SONAR_PROJECT_KEY` (default `dut-pbl6-2026_job-platform-gateway`).

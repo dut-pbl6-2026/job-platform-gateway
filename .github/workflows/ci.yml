@@ -89,20 +89,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  deploy:
-    needs: image
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Trigger Render deploy hook
-        env:
-          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_GATEWAY }}
-        run: |
-          if [ -z "$RENDER_DEPLOY_HOOK" ]; then echo "RENDER_DEPLOY_HOOK_GATEWAY not set — skip"; exit 0; fi
-          curl -sf -X POST "$RENDER_DEPLOY_HOOK" && echo "Render gateway deploy triggered"
-      - name: Smoke gateway health (handle 1m spin-up)
-        run: |
-          sleep 60
-          curl -sf https://jp-gateway.onrender.com/health && echo "gateway health ok" || echo "smoke gateway: cold start — check Render dashboard"
