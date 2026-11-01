@@ -161,6 +161,7 @@ builder.Services.AddReverseProxy()
         });
     });
 
+// Monitoring: expose OpenTelemetry metrics on /metrics (Prometheus scrape target).
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics =>
     {
@@ -248,7 +249,13 @@ var healthHandler = async (IConfiguration config, IHttpClientFactory clientFacto
     });
 };
 
-app.MapPrometheusScrapingEndpoint();
+// Monitoring: /metrics is meant for the internal scrape network. The gateway is the
+// public entry point, so it stays off in Production unless METRICS_ENABLED=true.
+if (app.Configuration.GetValue("METRICS_ENABLED", !app.Environment.IsProduction()))
+{
+    app.MapPrometheusScrapingEndpoint();
+}
+
 app.MapGet("/health", healthHandler);
 app.MapGet("/api/health", healthHandler);
 app.MapGet("/", () => Results.Ok(new { service = "gateway", version = "0.1.0" }));

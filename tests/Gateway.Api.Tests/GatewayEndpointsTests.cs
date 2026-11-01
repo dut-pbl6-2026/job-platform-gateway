@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 
 namespace Gateway.Api.Tests;
 
@@ -64,6 +66,7 @@ public class GatewayEndpointsTests : IClassFixture<WebApplicationFactory<Program
     {
         // Arrange
         var client = _factory.CreateClient();
+        await client.GetAsync("/"); // record one request so HTTP metrics are exported
 
         // Act
         var response = await client.GetAsync("/metrics");
@@ -71,9 +74,32 @@ public class GatewayEndpointsTests : IClassFixture<WebApplicationFactory<Program
         // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var content = await response.Content.ReadAsStringAsync();
-        Assert.NotEmpty(content);
         var contentType = response.Content.Headers.ContentType?.ToString();
         Assert.NotNull(contentType);
         Assert.Contains("text/plain", contentType);
+
+        // The value of the endpoint is the metrics, not just a 200. Assert the
+        // instrumentation actually wired up: runtime + ASP.NET Core meters.
+        Assert.Contains("dotnet_gc_last_collection_heap_size_bytes", content);
+        Assert.Contains("http_server_request_duration_seconds_count", content);
+    }
+
+    [Fact]
+    public async Task MetricsEndpoint_WhenDisabled_ReturnsNotFound()
+    {
+        // Arrange: /metrics must be switchable off (the gateway is internet-facing).
+        using var factory = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, config) =>
+                config.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["METRICS_ENABLED"] = "false"
+                })));
+        var client = factory.CreateClient();
+
+        // Act
+        var response = await client.GetAsync("/metrics");
+
+        // Assert
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 }
