@@ -58,4 +58,22 @@ public class GatewayEndpointsTests : IClassFixture<WebApplicationFactory<Program
         Assert.True(response.Headers.Contains("Referrer-Policy"));
         Assert.Equal("no-referrer", response.Headers.GetValues("Referrer-Policy").First());
     }
+
+    [Fact]
+    public async Task MetricsEndpoint_ReturnsPrometheusTextFormat()
+    {
+        // Arrange
+        var client = _factory.CreateClient();
+
+        // Act
+        var response = await client.GetAsync("/metrics");
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var content = await response.Content.ReadAsStringAsync();
+        Assert.NotEmpty(content);
+        var contentType = response.Content.Headers.ContentType?.ToString();
+        Assert.NotNull(contentType);
+        Assert.Contains("text/plain", contentType);
+    }
 }

@@ -6,6 +6,7 @@ using Microsoft.IdentityModel.Tokens;
 using SharedKernel;
 using Yarp.ReverseProxy.Transforms;
 using System.Security.Claims;
+using OpenTelemetry.Metrics;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -160,6 +161,16 @@ builder.Services.AddReverseProxy()
         });
     });
 
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics =>
+    {
+        metrics
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddRuntimeInstrumentation()
+            .AddPrometheusExporter();
+    });
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHttpClient();
 
@@ -237,6 +248,7 @@ var healthHandler = async (IConfiguration config, IHttpClientFactory clientFacto
     });
 };
 
+app.MapPrometheusScrapingEndpoint();
 app.MapGet("/health", healthHandler);
 app.MapGet("/api/health", healthHandler);
 app.MapGet("/", () => Results.Ok(new { service = "gateway", version = "0.1.0" }));
