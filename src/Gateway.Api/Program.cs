@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using SharedKernel;
 using Yarp.ReverseProxy.Transforms;
 using System.Security.Claims;
+using OpenTelemetry.Metrics;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddObservability();
@@ -173,6 +174,17 @@ builder.Services.AddReverseProxy()
         });
     });
 
+// Monitoring: expose OpenTelemetry metrics on /metrics (Prometheus scrape target).
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics =>
+    {
+        metrics
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddRuntimeInstrumentation()
+            .AddPrometheusExporter();
+    });
+
 // /health = existing liveness/upstream summary (Render healthCheckPath); /health/ready = readiness checks.
 var healthChecks = builder.Services.AddHealthChecks()
     .AddCheck<ProxyConfigHealthCheck>("proxy-config", tags: [HealthCheckTags.Ready]);
@@ -256,6 +268,13 @@ var healthHandler = async (IConfiguration config, IHttpClientFactory clientFacto
         services = results
     });
 };
+
+// Monitoring: /metrics is meant for the internal scrape network. The gateway is the
+// public entry point, so it stays off in Production unless METRICS_ENABLED=true.
+if (app.Configuration.GetValue("METRICS_ENABLED", !app.Environment.IsProduction()))
+{
+    app.MapPrometheusScrapingEndpoint();
+}
 
 app.MapGet("/health", healthHandler);
 app.MapGet("/api/health", healthHandler);
