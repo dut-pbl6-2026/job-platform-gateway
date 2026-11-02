@@ -18,8 +18,13 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Optional SonarCloud analysis: empty on fork PRs / Dependabot / unset secret -> Sonar steps skipped.
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ env.SONAR_TOKEN != '' && 0 || 1 }}
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: "10.0.100" }
       - uses: actions/cache@v4
@@ -31,10 +36,33 @@ jobs:
         run: dotnet restore Gateway.sln --packages "${{ runner.temp }}/pinned-packages"
       - name: Format check
         run: dotnet format --verify-no-changes Gateway.sln --no-restore
+      - name: Set up Java for SonarCloud
+        if: env.SONAR_TOKEN != ''
+        uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - name: Install SonarScanner
+        if: env.SONAR_TOKEN != ''
+        run: dotnet tool install --global dotnet-sonarscanner --version 11.2.1
+      - name: SonarCloud begin
+        if: env.SONAR_TOKEN != ''
+        run: >
+          dotnet-sonarscanner begin
+          /k:"${{ vars.SONAR_PROJECT_KEY || 'dut-pbl6-2026_job-platform-gateway' }}"
+          /o:"${{ vars.SONAR_ORGANIZATION || 'dut-pbl6-2026' }}"
+          /d:sonar.token="$SONAR_TOKEN"
+          /d:sonar.host.url="https://sonarcloud.io"
+          /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
+          /d:sonar.exclusions="**/Migrations/**"
       - name: Build
         run: dotnet build Gateway.sln --warnaserror --no-restore
       - name: Test
-        run: dotnet test Gateway.sln --no-build --no-restore
+        run: >
+          dotnet test Gateway.sln --no-build --no-restore
+          --collect:"XPlat Code Coverage"
+          -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura,opencover
+      - name: SonarCloud end
+        if: env.SONAR_TOKEN != ''
+        run: dotnet-sonarscanner end /d:sonar.token="$SONAR_TOKEN"
 
   image:
     needs: build
@@ -61,20 +89,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  deploy:
-    needs: image
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Trigger Render deploy hook
-        env:
-          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_GATEWAY }}
-        run: |
-          if [ -z "$RENDER_DEPLOY_HOOK" ]; then echo "RENDER_DEPLOY_HOOK_GATEWAY not set — skip"; exit 0; fi
-          curl -sf -X POST "$RENDER_DEPLOY_HOOK" && echo "Render gateway deploy triggered"
-      - name: Smoke gateway health (handle 1m spin-up)
-        run: |
-          sleep 60
-          curl -sf https://jp-gateway.onrender.com/health && echo "gateway health ok" || echo "smoke gateway: cold start — check Render dashboard"

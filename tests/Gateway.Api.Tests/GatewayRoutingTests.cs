@@ -54,6 +54,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_PROFILE", _stubAddress);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_APP", _stubAddress);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_NOTIF", _stubAddress);
+        Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_JOB", _stubAddress);
 
         _factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(b => b.UseEnvironment("Development"));
@@ -65,6 +66,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_PROFILE", null);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_APP", null);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_NOTIF", null);
+        Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_JOB", null);
         await _stub.DisposeAsync();
     }
 
@@ -220,5 +222,133 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Contains(clusters["app"].Destinations!, d => d.Value.Address == _stubAddress);
         Assert.Contains(clusters["profile"].Destinations!, d => d.Value.Address == _stubAddress);
         Assert.Contains(clusters["notif"].Destinations!, d => d.Value.Address == _stubAddress);
+    }
+
+    // ---- PBL6-44: role policies -------------------------------------------------
+
+    private static HttpRequestMessage Request(string method, string path, string? role)
+    {
+        var request = new HttpRequestMessage(new HttpMethod(method), path);
+        if (role is not null)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken(role: role));
+        }
+
+        return request;
+    }
+
+    public static TheoryData<string, string> RecruiterRoutes => new()
+    {
+        { "POST", "/api/jobs" },
+        { "GET", "/api/jobs/recruiter" },
+        { "PUT", "/api/jobs/6f1b2c3d-0000-4000-8000-000000000001" },
+        { "DELETE", "/api/jobs/6f1b2c3d-0000-4000-8000-000000000001" },
+        { "POST", "/api/companies" },
+        { "PUT", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002" },
+    };
+
+    public static TheoryData<string, string> CandidateRoutes => new()
+    {
+        { "POST", "/api/applications" },
+        { "GET", "/api/applications/me" },
+    };
+
+    [Theory]
+    [MemberData(nameof(RecruiterRoutes))]
+    public async Task RecruiterRoute_Anonymous_Returns401(string method, string path)
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request(method, path, role: null));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
+    [MemberData(nameof(RecruiterRoutes))]
+    public async Task RecruiterRoute_WrongRole_Returns403(string method, string path)
+    {
+        using var client = CreateClient();
+        foreach (var role in new[] { "User", "Admin" })
+        {
+            var response = await client.SendAsync(Request(method, path, role));
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(RecruiterRoutes))]
+    public async Task RecruiterRoute_RecruiterRole_IsForwarded(string method, string path)
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request(method, path, "Recruiter"));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("\"userRole\":\"Recruiter\"", body);
+    }
+
+    [Theory]
+    [MemberData(nameof(CandidateRoutes))]
+    public async Task CandidateRoute_Anonymous_Returns401(string method, string path)
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request(method, path, role: null));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
+    [MemberData(nameof(CandidateRoutes))]
+    public async Task CandidateRoute_WrongRole_Returns403(string method, string path)
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request(method, path, "Recruiter"));
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Theory]
+    [MemberData(nameof(CandidateRoutes))]
+    public async Task CandidateRoute_UserRole_IsForwarded(string method, string path)
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request(method, path, "User"));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("\"userRole\":\"User\"", body);
+    }
+
+    [Theory]
+    [InlineData("GET", "/api/jobs")]
+    [InlineData("GET", "/api/jobs/6f1b2c3d-0000-4000-8000-000000000001")]
+    [InlineData("GET", "/api/companies")]
+    [InlineData("GET", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002")]
+    public async Task PublicJobRoutes_Anonymous_StayOpen(string method, string path)
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request(method, path, role: null));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("User")]
+    [InlineData("Recruiter")]
+    [InlineData("Admin")]
+    public async Task AmbiguousApplicationRoutes_StayOnAuthenticated_AnyRoleForwarded(string role)
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request("PUT",
+            "/api/applications/6f1b2c3d-0000-4000-8000-000000000003/status", role));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public void RouteConfig_RolePoliciesAreAssigned()
+    {
+        var routes = _factory.Services.GetRequiredService<IProxyConfigProvider>()
+            .GetConfig().Routes.ToDictionary(r => r.RouteId);
+        foreach (var id in new[] { "jobs-create", "jobs-recruiter", "jobs-write", "companies-create", "companies-update" })
+            Assert.Equal("Recruiter", routes[id].AuthorizationPolicy);
+        foreach (var id in new[] { "apps-apply", "apps-me" })
+            Assert.Equal("User", routes[id].AuthorizationPolicy);
+        // Catch-alls stay as before.
+        Assert.Null(routes["jobs"].AuthorizationPolicy);
+        Assert.Equal("Authenticated", routes["apps"].AuthorizationPolicy);
     }
 }
