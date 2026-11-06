@@ -61,6 +61,12 @@ if (!string.IsNullOrEmpty(upstreamNotif))
     builder.Configuration["ReverseProxy:Clusters:notif:Destinations:notif1:Address"] = upstreamNotif;
 }
 
+var upstreamAi = builder.Configuration["GATEWAY_UPSTREAM_AI"];
+if (!string.IsNullOrEmpty(upstreamAi))
+{
+    builder.Configuration["ReverseProxy:Clusters:ai:Destinations:ai1:Address"] = upstreamAi;
+}
+
 // CORS
 var corsOrigins = builder.Configuration["CORS_ORIGINS"] ?? "http://localhost:5173,http://localhost:3000,https://jp-web.vercel.app,https://job-platform-web.vercel.app";
 var origins = corsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -233,7 +239,8 @@ var healthHandler = async (IConfiguration config, IHttpClientFactory clientFacto
         { "search", config["GATEWAY_UPSTREAM_SEARCH"] ?? "http://localhost:5003" },
         { "app", config["GATEWAY_UPSTREAM_APP"] ?? "http://localhost:5004" },
         { "profile", config["GATEWAY_UPSTREAM_PROFILE"] ?? "http://localhost:5005" },
-        { "notif", config["GATEWAY_UPSTREAM_NOTIF"] ?? "http://localhost:5006" }
+        { "notif", config["GATEWAY_UPSTREAM_NOTIF"] ?? "http://localhost:5006" },
+        { "ai", config["GATEWAY_UPSTREAM_AI"] ?? "http://localhost:6000" }
     };
 
     var client = clientFactory.CreateClient();

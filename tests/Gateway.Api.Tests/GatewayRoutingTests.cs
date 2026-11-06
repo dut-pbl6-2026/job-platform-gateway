@@ -55,6 +55,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_APP", _stubAddress);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_NOTIF", _stubAddress);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_JOB", _stubAddress);
+        Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_AI", _stubAddress);
 
         _factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(b => b.UseEnvironment("Development"));
@@ -67,6 +68,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_APP", null);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_NOTIF", null);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_JOB", null);
+        Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_AI", null);
         await _stub.DisposeAsync();
     }
 
@@ -112,6 +114,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     [InlineData("/api/profiles/me")]
     [InlineData("/api/applications/me")]
     [InlineData("/api/notifications/history?page=1&size=5")]
+    [InlineData("/api/ai/health")]
     public async Task ProtectedRoute_WithoutToken_Returns401(string path)
     {
         using var client = CreateClient();
@@ -150,6 +153,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     [Theory]
     [InlineData("/api/profiles/me")]
     [InlineData("/api/notifications/history")]
+    [InlineData("/api/ai/health")]
     public async Task ProtectedRoute_WithValidToken_ForwardsAndInjectsUserHeaders(string path)
     {
         using var client = CreateClient();
@@ -222,6 +226,40 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Contains(clusters["app"].Destinations!, d => d.Value.Address == _stubAddress);
         Assert.Contains(clusters["profile"].Destinations!, d => d.Value.Address == _stubAddress);
         Assert.Contains(clusters["notif"].Destinations!, d => d.Value.Address == _stubAddress);
+    }
+
+    [Fact]
+    public void RouteConfig_RoutesAiToAiClusterWithAuthenticatedPolicy()
+    {
+        var config = _factory.Services.GetRequiredService<IProxyConfigProvider>().GetConfig();
+
+        var routes = config.Routes.ToDictionary(r => r.RouteId);
+        Assert.Equal("ai", routes["ai"].ClusterId);
+        Assert.Equal("Authenticated", routes["ai"].AuthorizationPolicy);
+        Assert.Equal("/api/ai/{**catch-all}", routes["ai"].Match.Path);
+
+        var clusters = config.Clusters.ToDictionary(c => c.ClusterId);
+        Assert.Contains(clusters["ai"].Destinations!, d => d.Value.Address == _stubAddress);
+    }
+
+    [Fact]
+    public async Task AiScoreResume_WithToken_ForwardsMultipartPathUnchanged()
+    {
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", CreateToken(sub: "cand-1", role: "User"));
+        using var form = new MultipartFormDataContent
+        {
+            { new ByteArrayContent(new byte[1024]), "cv_file", "cv.pdf" },
+            { new StringContent(Guid.NewGuid().ToString()), "job_id" }
+        };
+
+        var response = await client.PostAsync("/api/ai/score-resume", form);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("\"path\":\"/api/ai/score-resume\"", body);
+        Assert.Contains("\"userId\":\"cand-1\"", body);
     }
 
     // ---- PBL6-44: role policies -------------------------------------------------
