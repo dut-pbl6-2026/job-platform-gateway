@@ -289,6 +289,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     {
         { "POST", "/api/applications" },
         { "GET", "/api/applications/me" },
+        { "GET", "/api/jobs/recommended" },
     };
 
     [Theory]
@@ -352,6 +353,24 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Contains("\"userRole\":\"User\"", body);
     }
 
+    [Fact]
+    public async Task JobsRecommended_AdminRole_Returns403()
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request("GET", "/api/jobs/recommended", "Admin"));
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task JobsRecommended_PostIsNotCapturedByUserRoute()
+    {
+        // Only GET is restricted to job seekers; other methods fall through to the anonymous
+        // `jobs` catch-all exactly as before the route existed.
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request("POST", "/api/jobs/recommended", role: null));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     [Theory]
     [InlineData("GET", "/api/jobs")]
     [InlineData("GET", "/api/jobs/6f1b2c3d-0000-4000-8000-000000000001")]
@@ -383,7 +402,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
             .GetConfig().Routes.ToDictionary(r => r.RouteId);
         foreach (var id in new[] { "jobs-create", "jobs-recruiter", "jobs-write", "companies-create", "companies-update" })
             Assert.Equal("Recruiter", routes[id].AuthorizationPolicy);
-        foreach (var id in new[] { "apps-apply", "apps-me" })
+        foreach (var id in new[] { "apps-apply", "apps-me", "jobs-recommended" })
             Assert.Equal("User", routes[id].AuthorizationPolicy);
         // Catch-alls stay as before.
         Assert.Null(routes["jobs"].AuthorizationPolicy);
