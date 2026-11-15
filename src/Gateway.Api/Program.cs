@@ -1,4 +1,3 @@
-using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
@@ -16,13 +15,13 @@ using StackExchange.Redis;
 var builder = WebApplication.CreateBuilder(args);
 builder.AddObservability();
 
-// JWT
+// JWT: RS256 only. Public keys come from auth-svc's discovery document (Jwt:MetadataAddress); the gateway
+// holds no signing key. Checked on the effective value after all configuration sources merge (fail fast).
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
-// The signing key has no committed fallback: it must come from configuration (Jwt__Secret or user
-// secrets) in every environment, and the check runs on the effective value after all sources merge.
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
-if (string.IsNullOrWhiteSpace(jwt.Secret) || jwt.Secret.Length < 32)
-    throw new InvalidOperationException("Jwt:Secret must be set to at least 32 characters via Jwt__Secret (PORT-05 fail-fast).");
+var jwtMetadataAddress = builder.Configuration["Jwt:MetadataAddress"];
+if (string.IsNullOrWhiteSpace(jwtMetadataAddress))
+    throw new InvalidOperationException("Jwt:MetadataAddress is required (env Jwt__MetadataAddress: auth-svc discovery URL, e.g. http://auth-svc:5001/.well-known/openid-configuration).");
 
 // Allow override via env GATEWAY_UPSTREAM_* for prod Render public URLs
 var upstreamAuth = builder.Configuration["GATEWAY_UPSTREAM_AUTH"];
@@ -76,6 +75,9 @@ builder.Services.AddCors(o => o.AddPolicy("Default", p => p.WithOrigins(origins)
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
     {
+        o.MetadataAddress = jwtMetadataAddress;
+        o.RequireHttpsMetadata = false; // auth-svc is reached over the private network (plain HTTP), see README
+        o.AutomaticRefreshInterval = TimeSpan.FromMinutes(15); // bounded refresh of the JWKS
         o.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -84,7 +86,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateIssuerSigningKey = true,
             ValidIssuer = jwt.Issuer,
             ValidAudience = jwt.Audience,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.Secret)),
+            ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
+            TryAllIssuerSigningKeys = false,
             ClockSkew = TimeSpan.FromSeconds(30)
         };
         // Reject access tokens issued before the user's revocation instant (written by auth-svc).
@@ -92,6 +95,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         {
             OnTokenValidated = async context =>
             {
+                if (!JwtClaimChecks.HasKidAndSubject(context.SecurityToken, context.Principal))
+                {
+                    context.Fail("Access token must carry a kid and a subject");
+                    return;
+                }
                 var store = context.HttpContext.RequestServices.GetRequiredService<ITokenRevocationStore>();
                 var logger = context.HttpContext.RequestServices
                     .GetRequiredService<ILoggerFactory>()

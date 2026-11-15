@@ -11,7 +11,7 @@ public class RedisConfigurationTests
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
-            builder.UseSetting("Jwt:Secret", GatewayTestFactory.TestJwtSecret);
+            builder.UseSetting("Jwt:MetadataAddress", TestSigningKeys.MetadataAddress);
             builder.UseSetting("ForwardedHeaders:KnownNetworks", "10.0.0.0/8");
             builder.UseSetting("REDIS_URL", string.Empty);
         });
