@@ -408,4 +408,30 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Null(routes["jobs"].AuthorizationPolicy);
         Assert.Equal("Authenticated", routes["apps"].AuthorizationPolicy);
     }
+
+    [Fact]
+    public async Task TelegramWebhook_IsAnonymousAndForwarded_WhileNotificationsStayProtected()
+    {
+        using var client = CreateClient();
+
+        // Telegram calls the webhook without a JWT; the notif service validates its own secret header.
+        var webhook = await client.SendAsync(Request("POST", "/api/notifications/telegram/webhook", role: null));
+        Assert.Equal(HttpStatusCode.OK, webhook.StatusCode);
+
+        // Every other notifications path still requires a JWT.
+        var history = await client.SendAsync(Request("GET", "/api/notifications/history", role: null));
+        Assert.Equal(HttpStatusCode.Unauthorized, history.StatusCode);
+    }
+
+    [Fact]
+    public void RouteConfig_TelegramWebhookIsAnonymousAndOrderedFirst()
+    {
+        var routes = _factory.Services.GetRequiredService<IProxyConfigProvider>()
+            .GetConfig().Routes.ToDictionary(r => r.RouteId);
+        Assert.Null(routes["notifications-telegram-webhook"].AuthorizationPolicy);
+        Assert.Equal("notif", routes["notifications-telegram-webhook"].ClusterId);
+        Assert.Equal("Authenticated", routes["notifications"].AuthorizationPolicy);
+        // Unset Order sorts last in YARP, so the webhook (Order -1) must beat the unordered catch-all.
+        Assert.True(routes["notifications-telegram-webhook"].Order < (routes["notifications"].Order ?? int.MaxValue));
+    }
 }
