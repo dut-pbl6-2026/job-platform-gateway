@@ -44,7 +44,28 @@ jobs:
             _shared/src/SharedKernel/SharedKernel.csproj \
             -c Release \
             -p:Version="$version" \
-            -o local-feed
+            -o "$RUNNER_TEMP/contract-feed"
+
+          # Dedicated config: the packed contract package and nuget.org only.
+          # The GitHub Packages feed is not used here, so no token is needed.
+          cat > "$RUNNER_TEMP/contract-nuget.config" <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+              <add key="contract-feed" value="$RUNNER_TEMP/contract-feed" />
+            </packageSources>
+            <packageSourceMapping>
+              <packageSource key="contract-feed">
+                <package pattern="JobPlatform.SharedKernel" />
+              </packageSource>
+              <packageSource key="nuget.org">
+                <package pattern="*" />
+              </packageSource>
+            </packageSourceMapping>
+          </configuration>
+          EOF
 
           echo "Shared commit: $(git -C _shared rev-parse HEAD)"
 
@@ -55,6 +76,7 @@ jobs:
 
           dotnet restore \
             tests/SharedContract.Tests/SharedContract.Tests.csproj \
+            --configfile "$RUNNER_TEMP/contract-nuget.config" \
             -p:ContractSharedVersion="$CONTRACT_SHARED_VERSION" \
             --packages "$RUNNER_TEMP/contract-packages"
 
