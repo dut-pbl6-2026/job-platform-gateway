@@ -6,7 +6,7 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
 
-    <ContractSharedVersion Condition="'$(ContractSharedVersion)' == ''">0.2.0</ContractSharedVersion>
+    <ContractSharedVersion Condition="'$(ContractSharedVersion)' == ''">0.3.1</ContractSharedVersion>
   </PropertyGroup>
 
   <ItemGroup>

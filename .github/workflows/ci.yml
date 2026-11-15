@@ -19,8 +19,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Optional SonarCloud analysis: empty on fork PRs / Dependabot / unset secret -> Sonar steps skipped.
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,7 +36,7 @@ jobs:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
           restore-keys: ${{ runner.os }}-nuget-
-      - name: Restore pinned local feed
+      - name: Restore
         run: dotnet restore Gateway.sln --packages "${{ runner.temp }}/pinned-packages"
       - name: Format check
         run: dotnet format --verify-no-changes Gateway.sln --no-restore
@@ -84,6 +88,8 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
+          secrets: |
+            nuget_token=${{ secrets.GITHUB_TOKEN }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

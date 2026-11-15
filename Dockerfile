@@ -3,10 +3,11 @@ WORKDIR /src
 COPY Gateway.sln ./
 COPY src/Gateway.Api/Gateway.Api.csproj src/Gateway.Api/
 COPY nuget.config ./
-COPY local-feed/ local-feed/
-RUN dotnet restore src/Gateway.Api/Gateway.Api.csproj
+RUN --mount=type=secret,id=nuget_token,required=true \
+    GITHUB_TOKEN="$(cat /run/secrets/nuget_token)" dotnet restore src/Gateway.Api/Gateway.Api.csproj
 COPY . .
-RUN dotnet publish src/Gateway.Api/Gateway.Api.csproj -c Release -o /app/publish /p:UseAppHost=false
+RUN --mount=type=secret,id=nuget_token,required=true \
+    GITHUB_TOKEN="$(cat /run/secrets/nuget_token)" dotnet publish src/Gateway.Api/Gateway.Api.csproj -c Release -o /app/publish /p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
