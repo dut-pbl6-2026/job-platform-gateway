@@ -168,6 +168,18 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("/api/auth/register-company")]
+    [InlineData("/api/auth/verify-email")]
+    public async Task AnonymousAuthSignupRoutes_PassWithoutToken(string path)
+    {
+        // Auth upstream is not stubbed in this class, so the request may fail upstream (502); it must not be refused by the gateway.
+        using var client = CreateClient();
+        var response = await client.PostAsync(path, new StringContent("{}", Encoding.UTF8, "application/json"));
+        Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     [Fact]
     public async Task PublicProfileRoute_WithoutToken_ForwardsToProfileCluster()
     {
@@ -390,6 +402,9 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         { "POST", "/api/companies" },
         { "PUT", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002" },
         { "POST", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002/invite-codes" },
+        { "GET", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002/join-requests" },
+        { "POST", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002/join-requests/6f1b2c3d-0000-4000-8000-000000000008/approve" },
+        { "POST", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002/join-requests/6f1b2c3d-0000-4000-8000-000000000008/reject" },
     };
 
     public static TheoryData<string, string> CandidateRoutes => new()
@@ -507,8 +522,10 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     {
         var routes = _factory.Services.GetRequiredService<IProxyConfigProvider>()
             .GetConfig().Routes.ToDictionary(r => r.RouteId);
-        foreach (var id in new[] { "jobs-create", "jobs-recruiter", "jobs-write", "companies-create", "companies-update" })
+        foreach (var id in new[] { "jobs-create", "jobs-recruiter", "jobs-write", "companies-create", "companies-update", "companies-join-requests", "companies-join-requests-decide" })
             Assert.Equal("Recruiter", routes[id].AuthorizationPolicy);
+        foreach (var id in new[] { "companies-me-join-request", "companies-me-join-request-escalate" })
+            Assert.Equal("Authenticated", routes[id].AuthorizationPolicy);
         foreach (var id in new[] { "apps-apply", "apps-me", "jobs-recommended" })
             Assert.Equal("User", routes[id].AuthorizationPolicy);
         // Catch-alls stay as before.
@@ -572,6 +589,67 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.True(routes["notifications-telegram-webhook"].Order < (routes["notifications"].Order ?? int.MaxValue));
     }
 
+    // ---- Company join requests (AUTH-01-12..14): requester routes are Authenticated, admin routes are Recruiter ----
+
+    public static TheoryData<string, string> RequesterRoutes => new()
+    {
+        { "GET", "/api/companies/me/join-request" },
+        { "HEAD", "/api/companies/me/join-request" },
+        { "POST", "/api/companies/me/join-request" },
+        { "POST", "/api/companies/me/join-request/escalate" },
+        { "GET", "/api/companies/me/join-request/escalate" },
+        { "HEAD", "/api/companies/me/join-request/escalate" },
+    };
+
+    [Theory]
+    [MemberData(nameof(RequesterRoutes))]
+    public async Task RequesterRoute_Anonymous_Returns401AndIsNotForwarded(string method, string path)
+    {
+        // The anonymous `companies` catch-all (GET/HEAD) must not capture these paths.
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request(method, path, role: null));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.DoesNotContain($"{method} {path}", _forwarded);
+    }
+
+    [Theory]
+    [InlineData("User")]
+    [InlineData("Recruiter")]
+    [InlineData("Admin")]
+    public async Task RequesterRoute_AnyRole_IsForwarded(string role)
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request("GET", "/api/companies/me/join-request", role));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("GET /api/companies/me/join-request", _forwarded);
+
+        var escalate = await client.SendAsync(Request("POST", "/api/companies/me/join-request/escalate", role));
+        Assert.Equal(HttpStatusCode.OK, escalate.StatusCode);
+        Assert.Contains("POST /api/companies/me/join-request/escalate", _forwarded);
+    }
+
+    [Theory]
+    [InlineData("GET", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002/join-requests")]
+    [InlineData("HEAD", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002/join-requests")]
+    [InlineData("POST", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002/join-requests/6f1b2c3d-0000-4000-8000-000000000008/approve")]
+    [InlineData("GET", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002/join-requests/6f1b2c3d-0000-4000-8000-000000000008/reject")]
+    public async Task JoinRequestAdminRoute_Anonymous_Returns401AndIsNotForwarded(string method, string path)
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request(method, path, role: null));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.DoesNotContain($"{method} {path}", _forwarded);
+    }
+
+    [Fact]
+    public void RouteConfig_CompanyRoutesAreNotOnTheAnonymousCatchAll()
+    {
+        var routes = _factory.Services.GetRequiredService<IProxyConfigProvider>()
+            .GetConfig().Routes.ToDictionary(r => r.RouteId);
+        Assert.Null(routes["companies"].AuthorizationPolicy);
+        Assert.Equal(new[] { "GET", "HEAD" }, routes["companies"].Match.Methods!.OrderBy(m => m, StringComparer.Ordinal));
+    }
+
     // ---- Invite codes: issue is a Recruiter write on the job cluster; auth-svc's internal endpoints are never public ----
 
     [Fact]
@@ -603,6 +681,12 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     [InlineData("POST", "/api/internal/invite-codes/check")]
     [InlineData("POST", "/api/internal/invite-codes/redeem")]
     [InlineData("POST", "/api/internal/invite-codes/6f1b2c3d-0000-4000-8000-000000000007/release")]
+    [InlineData("POST", "/api/internal/companies")]
+    [InlineData("POST", "/api/internal/companies/domain-match")]
+    [InlineData("GET", "/api/internal/companies/availability?companyName=Acme")]
+    [InlineData("POST", "/api/internal/company-join-requests")]
+    [InlineData("POST", "/api/internal/company-join-requests/6f1b2c3d-0000-4000-8000-000000000008/support-decision")]
+    [InlineData("POST", "/api/internal/users/6f1b2c3d-0000-4000-8000-000000000009/link-company")]
     public async Task InternalInviteCodeEndpoints_AreNotRouted_WithOrWithoutToken(string method, string path)
     {
         using var client = CreateClient();
