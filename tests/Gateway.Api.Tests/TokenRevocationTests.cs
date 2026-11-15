@@ -83,6 +83,17 @@ public class TokenRevocationTests
     }
 
     [Fact]
+    public async Task IsRevokedAsync_NoSubjectClaim_IsNotCheckedAndNotRevoked()
+    {
+        var store = new FakeStore(DateTimeOffset.FromUnixTimeSeconds(1));
+
+        var revoked = await TokenRevocation.IsRevokedAsync(
+            Principal(sub: null, iat: 1_000), store, NullLogger.Instance);
+
+        Assert.False(revoked);
+    }
+
+    [Fact]
     public async Task IsRevokedAsync_StoreThrows_FailsOpen()
     {
         var store = new FakeStore(null, new InvalidOperationException("redis down"));

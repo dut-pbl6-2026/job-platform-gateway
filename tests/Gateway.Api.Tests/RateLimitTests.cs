@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using Gateway.Api.RateLimiting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -19,6 +20,12 @@ public class RateLimitTests
                 throw error;
             return Task.FromResult(new RateLimitCounter(count, ttl ?? window));
         }
+    }
+
+    private sealed class CancellingStore : IRateLimitStore
+    {
+        public Task<RateLimitCounter> IncrementAsync(string key, TimeSpan window, CancellationToken ct = default) =>
+            throw new OperationCanceledException(ct);
     }
 
     private sealed class ListLogger<T> : ILogger<T>
@@ -102,6 +109,38 @@ public class RateLimitTests
     }
 
     [Fact]
+    public async Task Middleware_BlockedRequest_WritesJsonProblemBody()
+    {
+        var (middleware, _, _) = Build(new FakeStore(count: 3));
+        var context = Context();
+        context.Response.Body = new MemoryStream();
+
+        await middleware.InvokeAsync(context);
+
+        Assert.StartsWith("application/json", context.Response.ContentType);
+        context.Response.Body.Seek(0, SeekOrigin.Begin);
+        var body = await JsonDocument.ParseAsync(context.Response.Body);
+        Assert.Equal(429, body.RootElement.GetProperty("status").GetInt32());
+        Assert.Equal("Too Many Requests", body.RootElement.GetProperty("title").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(body.RootElement.GetProperty("detail").GetString()));
+    }
+
+    [Fact]
+    public async Task Middleware_RequestAbortedDuringStoreCall_RethrowsWithoutFailingOpen()
+    {
+        var (middleware, called, logger) = Build(new CancellingStore());
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var context = Context();
+        context.RequestAborted = cts.Token;
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
+
+        Assert.False(called[0]);
+        Assert.Empty(logger.Entries);
+    }
+
+    [Fact]
     public async Task Middleware_StoreError_FailsOpenAndLogsWarning()
     {
         var (middleware, called, logger) = Build(new FakeStore(error: new TimeoutException("redis down")));
@@ -155,5 +194,34 @@ public class RateLimitTests
         clock.Now = clock.Now.AddSeconds(41);
         var afterWindow = await store.IncrementAsync("ip", window);
         Assert.Equal(1, afterWindow.Count);
+    }
+
+    [Fact]
+    public async Task InMemoryStore_KeysAreIsolatedAndReportWindowTtl()
+    {
+        var clock = new ManualClock(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var store = new InMemoryRateLimitStore(clock);
+        var window = TimeSpan.FromMinutes(1);
+
+        await store.IncrementAsync("198.51.100.1", window);
+        await store.IncrementAsync("198.51.100.1", window);
+        var other = await store.IncrementAsync("198.51.100.2", window);
+
+        Assert.Equal(1, other.Count);
+        Assert.Equal(window, other.TimeToLive);
+    }
+
+    [Fact]
+    public async Task InMemoryStore_ConcurrentIncrements_AreNotLost()
+    {
+        var store = new InMemoryRateLimitStore();
+        var window = TimeSpan.FromMinutes(1);
+
+        var counters = await Task.WhenAll(
+            Enumerable.Range(0, 200).Select(_ => store.IncrementAsync("ip", window)));
+
+        var counts = counters.Select(c => c.Count).ToList();
+        Assert.Equal(200, counts.Distinct().Count());
+        Assert.Equal(200, counts.Max());
     }
 }
