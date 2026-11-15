@@ -23,6 +23,7 @@ public class RouteContractTests : IClassFixture<GatewayTestFactory>
             "categories|job|/api/categories/{**catch-all}|GET|HEAD||",
             "companies|job|/api/companies/{**catch-all}|GET|HEAD||",
             "companies-create|job|/api/companies|POST|Recruiter|",
+            "companies-invite-codes|job|/api/companies/{id:guid}/invite-codes|POST|Recruiter|",
             "companies-update|job|/api/companies/{id:guid}|PUT|Recruiter|",
             "health-auth|auth|/health/auth|||",
             "jobs|job|/api/jobs/{**catch-all}|GET|HEAD||",
