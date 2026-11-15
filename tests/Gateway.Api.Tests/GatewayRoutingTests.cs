@@ -6,7 +6,6 @@ using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 using Xunit;
@@ -27,11 +26,12 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
 {
     private const string Issuer = "job-platform";
     private const string Audience = "job-platform";
-    private const string Secret = "dev-jwt-secret-change-me-32chars-min";
+    // The secret that used to be committed in appsettings.json. Tokens signed with it must be rejected.
+    private const string RemovedCommittedSecret = "dev-jwt-secret-change-me-32chars-min";
 
     private WebApplication _stub = null!;
     private string _stubAddress = null!;
-    private WebApplicationFactory<Program> _factory = null!;
+    private GatewayTestFactory _factory = null!;
 
     public async Task InitializeAsync()
     {
@@ -57,8 +57,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_JOB", _stubAddress);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_AI", _stubAddress);
 
-        _factory = new WebApplicationFactory<Program>()
-            .WithWebHostBuilder(b => b.UseEnvironment("Development"));
+        _factory = new GatewayTestFactory();
     }
 
     public async Task DisposeAsync()
@@ -80,9 +79,10 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         string issuer = Issuer,
         string audience = Audience,
         TimeSpan? lifetime = null,
-        TimeSpan? notBefore = null)
+        TimeSpan? notBefore = null,
+        string secret = GatewayTestFactory.TestJwtSecret)
     {
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Secret));
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
         var claims = new List<Claim>
         {
@@ -179,6 +179,18 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
                 notBefore: TimeSpan.FromMinutes(-10)));
 
         var response = await client.GetAsync("/api/profiles/me");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_SignedWithRemovedCommittedSecret_Returns401()
+    {
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", CreateToken(role: "Admin", secret: RemovedCommittedSecret));
+
+        var response = await client.GetAsync("/api/admin/stats");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
@@ -362,13 +374,13 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task JobsRecommended_PostIsNotCapturedByUserRoute()
+    public async Task JobsRecommended_PostIsNotForwardedAnonymously()
     {
-        // Only GET is restricted to job seekers; other methods fall through to the anonymous
-        // `jobs` catch-all exactly as before the route existed.
+        // Only GET is restricted to job seekers. The anonymous `jobs` catch-all is GET/HEAD only,
+        // so POST to this path must not reach job-svc without a token.
         using var client = CreateClient();
         var response = await client.SendAsync(Request("POST", "/api/jobs/recommended", role: null));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
     }
 
     [Theory]
@@ -407,6 +419,36 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         // Catch-alls stay as before.
         Assert.Null(routes["jobs"].AuthorizationPolicy);
         Assert.Equal("Authenticated", routes["apps"].AuthorizationPolicy);
+    }
+
+    [Theory]
+    [InlineData("PATCH", "/api/jobs/6f1b2c3d-0000-4000-8000-000000000001")]
+    [InlineData("DELETE", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002")]
+    [InlineData("PATCH", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002")]
+    [InlineData("POST", "/api/jobs/6f1b2c3d-0000-4000-8000-000000000001")]
+    [InlineData("DELETE", "/api/categories/6f1b2c3d-0000-4000-8000-000000000004")]
+    [InlineData("POST", "/api/categories")]
+    public async Task CatalogRoutes_UnsupportedWriteVerbs_AreNotForwarded(string method, string path)
+    {
+        // job-svc has no such endpoint, and the anonymous catch-all is GET/HEAD only. YARP answers 405
+        // for a matched path with a disallowed method, so nothing is forwarded, with or without a token.
+        using var client = CreateClient();
+
+        var anonymous = await client.SendAsync(Request(method, path, role: null));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, anonymous.StatusCode);
+
+        var recruiter = await client.SendAsync(Request(method, path, "Recruiter"));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, recruiter.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("HEAD", "/api/jobs")]
+    [InlineData("GET", "/api/categories")]
+    public async Task CatalogRoutes_ReadMethods_StayOpen(string method, string path)
+    {
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request(method, path, role: null));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Fact]

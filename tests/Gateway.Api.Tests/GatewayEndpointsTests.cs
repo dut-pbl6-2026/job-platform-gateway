@@ -6,11 +6,11 @@ using Microsoft.Extensions.Configuration;
 
 namespace Gateway.Api.Tests;
 
-public class GatewayEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
+public class GatewayEndpointsTests : IClassFixture<GatewayTestFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly GatewayTestFactory _factory;
 
-    public GatewayEndpointsTests(WebApplicationFactory<Program> factory)
+    public GatewayEndpointsTests(GatewayTestFactory factory)
     {
         _factory = factory;
     }
@@ -101,6 +101,21 @@ public class GatewayEndpointsTests : IClassFixture<WebApplicationFactory<Program
 
         // Assert
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public void Startup_WithoutJwtSecret_FailsInEveryEnvironment()
+    {
+        // Jwt:Secret has no committed fallback, so an empty key must stop startup outside Production too.
+        foreach (var environment in new[] { "Production", "Staging", "Development" })
+        {
+            using var factory = _factory.WithWebHostBuilder(b => b
+                .UseEnvironment(environment)
+                .UseSetting("Jwt:Secret", ""));
+
+            var ex = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+            Assert.Contains("Jwt:Secret", ex.ToString());
+        }
     }
 
     [Fact]

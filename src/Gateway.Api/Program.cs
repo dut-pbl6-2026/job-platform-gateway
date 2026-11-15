@@ -15,13 +15,11 @@ builder.AddObservability();
 
 // JWT
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+// The signing key has no committed fallback: it must come from configuration (Jwt__Secret or user
+// secrets) in every environment, and the check runs on the effective value after all sources merge.
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
-if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
-{
-    if (builder.Environment.IsProduction())
-        throw new InvalidOperationException("JWT Secret must be >=32 chars via JWT__Secret / Jwt:Secret (PORT-05 fail-fast)");
-    jwt.Secret = "dev-jwt-secret-change-me-32chars-min";
-}
+if (string.IsNullOrWhiteSpace(jwt.Secret) || jwt.Secret.Length < 32)
+    throw new InvalidOperationException("Jwt:Secret must be set to at least 32 characters via Jwt__Secret (PORT-05 fail-fast).");
 
 // Allow override via env GATEWAY_UPSTREAM_* for prod Render public URLs
 var upstreamAuth = builder.Configuration["GATEWAY_UPSTREAM_AUTH"];
