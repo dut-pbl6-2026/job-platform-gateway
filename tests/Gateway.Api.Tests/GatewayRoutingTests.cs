@@ -389,6 +389,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         { "DELETE", "/api/jobs/6f1b2c3d-0000-4000-8000-000000000001" },
         { "POST", "/api/companies" },
         { "PUT", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002" },
+        { "POST", "/api/companies/6f1b2c3d-0000-4000-8000-000000000002/invite-codes" },
     };
 
     public static TheoryData<string, string> CandidateRoutes => new()
@@ -569,6 +570,57 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Equal("Authenticated", routes["notifications"].AuthorizationPolicy);
         // Unset Order sorts last in YARP, so the webhook (Order -1) must beat the unordered catch-all.
         Assert.True(routes["notifications-telegram-webhook"].Order < (routes["notifications"].Order ?? int.MaxValue));
+    }
+
+    // ---- Invite codes: issue is a Recruiter write on the job cluster; auth-svc's internal endpoints are never public ----
+
+    [Fact]
+    public async Task IssueInviteCode_RecruiterToken_ForwardsToJobCluster()
+    {
+        var companyId = "6f1b2c3d-0000-4000-8000-000000000006";
+        var path = $"/api/companies/{companyId}/invite-codes";
+        using var client = CreateClient();
+
+        var response = await client.SendAsync(Request("POST", path, "Recruiter"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains($"POST {path}", _forwarded);
+    }
+
+    [Fact]
+    public async Task IssueInviteCode_Anonymous_IsRejectedAndNotForwarded()
+    {
+        var path = "/api/companies/6f1b2c3d-0000-4000-8000-000000000006/invite-codes";
+        using var client = CreateClient();
+
+        var response = await client.SendAsync(Request("POST", path, role: null));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.DoesNotContain($"POST {path}", _forwarded);
+    }
+
+    [Theory]
+    [InlineData("POST", "/api/internal/invite-codes/check")]
+    [InlineData("POST", "/api/internal/invite-codes/redeem")]
+    [InlineData("POST", "/api/internal/invite-codes/6f1b2c3d-0000-4000-8000-000000000007/release")]
+    public async Task InternalInviteCodeEndpoints_AreNotRouted_WithOrWithoutToken(string method, string path)
+    {
+        using var client = CreateClient();
+
+        var anonymous = await client.SendAsync(Request(method, path, role: null));
+        var admin = await client.SendAsync(Request(method, path, "Admin"));
+
+        Assert.Equal(HttpStatusCode.NotFound, anonymous.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, admin.StatusCode);
+        Assert.DoesNotContain($"{method} {path}", _forwarded);
+    }
+
+    [Fact]
+    public void RouteConfig_NoRouteMatchesInternalPaths()
+    {
+        var config = _factory.Services.GetRequiredService<IProxyConfigProvider>().GetConfig();
+
+        Assert.DoesNotContain(config.Routes, r => r.Match.Path?.StartsWith("/api/internal", StringComparison.Ordinal) == true);
     }
 
     // ---- Search: index writes are internal-only and must not be routed through the public gateway ----
