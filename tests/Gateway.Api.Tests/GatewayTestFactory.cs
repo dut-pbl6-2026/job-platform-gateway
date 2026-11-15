@@ -15,5 +15,7 @@ public sealed class GatewayTestFactory : WebApplicationFactory<Program>
     {
         builder.UseEnvironment("Development");
         builder.UseSetting("Jwt:Secret", TestJwtSecret);
+        // Empty REDIS_URL keeps the revocation store in memory even if the developer's shell sets it.
+        builder.UseSetting("REDIS_URL", string.Empty);
     }
 }

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
@@ -7,6 +8,7 @@ using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 using Xunit;
@@ -87,7 +89,8 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         string audience = Audience,
         TimeSpan? lifetime = null,
         TimeSpan? notBefore = null,
-        string secret = GatewayTestFactory.TestJwtSecret)
+        string secret = GatewayTestFactory.TestJwtSecret,
+        DateTimeOffset? issuedAt = null)
     {
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
@@ -97,6 +100,8 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
             new(ClaimTypes.Role, role),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
+        if (issuedAt is { } iat)
+            claims.Add(new Claim(JwtRegisteredClaimNames.Iat, iat.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), ClaimValueTypes.Integer64));
         var token = new JwtSecurityToken(
             issuer: issuer,
             audience: audience,
@@ -528,5 +533,60 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Null(route.AuthorizationPolicy);
         Assert.NotNull(route.Match.Methods);
         Assert.Equal(new[] { "GET", "HEAD" }, route.Match.Methods.OrderBy(m => m, StringComparer.Ordinal));
+    }
+
+    private static string RevocationKey(Guid userId) => $"job-platform:auth:revoked-after:{userId:D}";
+
+    [Fact]
+    public async Task RevokedUser_TokenIssuedBeforeRevocation_Returns401()
+    {
+        var userId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var cache = _factory.Services.GetRequiredService<IDistributedCache>();
+        await cache.SetStringAsync(RevocationKey(userId), now.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture));
+
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
+            CreateToken(sub: userId.ToString(), issuedAt: now.AddHours(-1)));
+
+        var response = await client.GetAsync("/api/profiles/me");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task RevokedUser_TokenIssuedAfterRevocation_Returns200()
+    {
+        // Proves the iat claim is read: the same revocation entry does not reject a newer token.
+        var userId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var cache = _factory.Services.GetRequiredService<IDistributedCache>();
+        await cache.SetStringAsync(RevocationKey(userId), now.AddHours(-1).ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture));
+
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
+            CreateToken(sub: userId.ToString(), issuedAt: now));
+
+        var response = await client.GetAsync("/api/profiles/me");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task OtherUsersToken_IsNotAffectedByRevocation_Returns200()
+    {
+        var revokedUser = Guid.NewGuid();
+        var otherUser = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var cache = _factory.Services.GetRequiredService<IDistributedCache>();
+        await cache.SetStringAsync(RevocationKey(revokedUser), now.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture));
+
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
+            CreateToken(sub: otherUser.ToString(), issuedAt: now.AddHours(-1)));
+
+        var response = await client.GetAsync("/api/profiles/me");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 }

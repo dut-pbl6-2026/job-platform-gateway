@@ -2,6 +2,7 @@
 .NET YARP Gateway — part of **Vietnam Job Platform** (`pbl6`) under [`dut-pbl6-2026`](https://github.com/dut-pbl6-2026).
 - Tech: .NET YARP Gateway
 - Configuration: the gateway will not start without `Jwt__Secret` (>= 32 chars, same key the auth service signs with). Set it as an environment variable or with `dotnet user-secrets`; there is no committed default.
+- Access-token revocation: `REDIS_URL` (required in Production; same Redis as the auth service), optional `REDIS_PASSWORD` and `REDIS_DB`. Outside Production, without `REDIS_URL`, an in-memory store is used. Redis errors fail open with a logged warning.
 - Branch flow: `feature/* → main` (see job-platform-docs/.github/git-strategy.md)
 - Jira PBL6 skid.atlassian.net, Master plan docs/master-plan.md
 - TM: TM1 Hoai, TM2 Thanh, TM3 Chi Bao, TM4 Khoa
