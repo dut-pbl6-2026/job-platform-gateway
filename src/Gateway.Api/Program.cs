@@ -9,6 +9,8 @@ using SharedKernel;
 using Yarp.ReverseProxy.Transforms;
 using System.Security.Claims;
 using OpenTelemetry.Metrics;
+using Gateway.Api.Auth;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddObservability();
@@ -84,6 +86,19 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.Secret)),
             ClockSkew = TimeSpan.FromSeconds(30)
         };
+        // Reject access tokens issued before the user's revocation instant (written by auth-svc).
+        o.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var store = context.HttpContext.RequestServices.GetRequiredService<ITokenRevocationStore>();
+                var logger = context.HttpContext.RequestServices
+                    .GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("TokenRevocation");
+                if (await TokenRevocation.IsRevokedAsync(context.Principal, store, logger, context.HttpContext.RequestAborted))
+                    context.Fail("Access token revoked");
+            }
+        };
         // Let gateway authenticate but not require auth globally; YARP will forward 401 as 401
         // Anonymous routes (auth login/register/refresh, job browsing, search) remain accessible.
         // Protected YARP routes opt in via AuthorizationPolicy "Authenticated".
@@ -140,6 +155,30 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0
             }));
 });
+
+// Access-token revocation store: Redis (same instance and key format as auth-svc) when configured,
+// in-memory for local development. Production must configure Redis.
+var redisUrl = builder.Configuration["REDIS_URL"];
+if (!string.IsNullOrWhiteSpace(redisUrl))
+{
+    var redisOptions = ConfigurationOptions.Parse(redisUrl);
+    var redisPassword = builder.Configuration["REDIS_PASSWORD"];
+    if (!string.IsNullOrWhiteSpace(redisPassword))
+        redisOptions.Password = redisPassword;
+    if (int.TryParse(builder.Configuration["REDIS_DB"], out var redisDb))
+        redisOptions.DefaultDatabase = redisDb;
+    redisOptions.AbortOnConnectFail = false;
+
+    builder.Services.AddStackExchangeRedisCache(o => o.ConfigurationOptions = redisOptions);
+}
+else
+{
+    if (builder.Environment.IsProduction())
+        throw new InvalidOperationException("REDIS_URL must be set in Production (required for access-token revocation).");
+
+    builder.Services.AddDistributedMemoryCache();
+}
+builder.Services.AddSingleton<ITokenRevocationStore, TokenRevocationStore>();
 
 // YARP
 builder.Services.AddReverseProxy()
