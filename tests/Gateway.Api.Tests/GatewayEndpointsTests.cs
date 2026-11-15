@@ -104,17 +104,17 @@ public class GatewayEndpointsTests : IClassFixture<GatewayTestFactory>
     }
 
     [Fact]
-    public void Startup_WithoutJwtSecret_FailsInEveryEnvironment()
+    public void Startup_WithoutJwtMetadataAddress_FailsInEveryEnvironment()
     {
-        // Jwt:Secret has no committed fallback, so an empty key must stop startup outside Production too.
+        // Jwt:MetadataAddress has no default, so an empty value must stop startup in every environment.
         foreach (var environment in new[] { "Production", "Staging", "Development" })
         {
             using var factory = _factory.WithWebHostBuilder(b => b
                 .UseEnvironment(environment)
-                .UseSetting("Jwt:Secret", ""));
+                .UseSetting("Jwt:MetadataAddress", ""));
 
             var ex = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
-            Assert.Contains("Jwt:Secret", ex.ToString());
+            Assert.Contains("Jwt:MetadataAddress", ex.ToString());
         }
     }
 

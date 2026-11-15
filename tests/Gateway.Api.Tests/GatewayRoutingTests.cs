@@ -4,6 +4,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -29,8 +30,8 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
 {
     private const string Issuer = "job-platform";
     private const string Audience = "job-platform";
-    // The secret that used to be committed in appsettings.json. Tokens signed with it must be rejected.
-    private const string RemovedCommittedSecret = "dev-jwt-secret-change-me-32chars-min";
+    // The shared HMAC secret that HS256 used to rely on. Tokens signed with it must be rejected.
+    private const string RetiredHmacSecret = "dev-jwt-secret-change-me-32chars-min";
 
     private WebApplication _stub = null!;
     private string _stubAddress = null!;
@@ -89,11 +90,30 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         string audience = Audience,
         TimeSpan? lifetime = null,
         TimeSpan? notBefore = null,
-        string secret = GatewayTestFactory.TestJwtSecret,
-        DateTimeOffset? issuedAt = null)
+        DateTimeOffset? issuedAt = null,
+        RSA? signingKey = null,
+        string? kid = TestSigningKeys.Kid)
     {
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        var key = new RsaSecurityKey(signingKey ?? TestSigningKeys.Current) { KeyId = kid };
+        var credentials = new SigningCredentials(key, SecurityAlgorithms.RsaSha256);
+        return WriteToken(credentials, sub, role, issuer, audience, lifetime, notBefore, issuedAt);
+    }
+
+    private static string CreateHs256Token(string sub = "user-123", string role = "User") =>
+        WriteToken(
+            new SigningCredentials(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(RetiredHmacSecret)), SecurityAlgorithms.HmacSha256),
+            sub, role, Issuer, Audience, lifetime: null, notBefore: null, issuedAt: null);
+
+    private static string WriteToken(
+        SigningCredentials credentials,
+        string sub,
+        string role,
+        string issuer,
+        string audience,
+        TimeSpan? lifetime,
+        TimeSpan? notBefore,
+        DateTimeOffset? issuedAt)
+    {
         var claims = new List<Claim>
         {
             new(JwtRegisteredClaimNames.Sub, sub),
@@ -196,13 +216,75 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ProtectedRoute_SignedWithRemovedCommittedSecret_Returns401()
+    public async Task ProtectedRoute_Hs256Token_Returns401()
     {
         using var client = CreateClient();
         client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", CreateToken(role: "Admin", secret: RemovedCommittedSecret));
+            new AuthenticationHeaderValue("Bearer", CreateHs256Token(role: "Admin"));
 
         var response = await client.GetAsync("/api/admin/stats");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_Rs256TokenFromUnknownKey_Returns401()
+    {
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", CreateToken(role: "Admin", signingKey: TestSigningKeys.Foreign));
+
+        var response = await client.GetAsync("/api/admin/stats");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_Rs256TokenWithoutKid_Returns401()
+    {
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", CreateToken(role: "Admin", kid: null));
+
+        var response = await client.GetAsync("/api/admin/stats");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_Rs256TokenWithUnpublishedKid_Returns401()
+    {
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", CreateToken(role: "Admin", kid: "not-published"));
+
+        var response = await client.GetAsync("/api/admin/stats");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_ValidRs256TokenFromJwks_IsForwarded()
+    {
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", CreateToken(sub: "cand-jwks", role: "User"));
+
+        var response = await client.GetAsync("/api/applications/me");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_ValidTokenWhileJwksUnavailable_Returns401()
+    {
+        // Fail closed: with no key set loaded, even a correctly signed token must be refused.
+        using var unavailable = GatewayTestFactory.WithUnavailableJwks();
+        using var client = unavailable.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", CreateToken(role: "User"));
+
+        var response = await client.GetAsync("/api/applications/me");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
