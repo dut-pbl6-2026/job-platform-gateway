@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
@@ -32,14 +33,18 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     private WebApplication _stub = null!;
     private string _stubAddress = null!;
     private GatewayTestFactory _factory = null!;
+    // "METHOD /path" for every request the downstream stub receives, so tests can prove a request was not forwarded.
+    private readonly ConcurrentQueue<string> _forwarded = new();
 
     public async Task InitializeAsync()
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         _stub = builder.Build();
+        var forwarded = _forwarded;
         _stub.Run(async ctx =>
         {
+            forwarded.Enqueue($"{ctx.Request.Method} {ctx.Request.Path}");
             ctx.Response.StatusCode = StatusCodes.Status200OK;
             await ctx.Response.WriteAsJsonAsync(new
             {
@@ -56,6 +61,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_NOTIF", _stubAddress);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_JOB", _stubAddress);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_AI", _stubAddress);
+        Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_SEARCH", _stubAddress);
 
         _factory = new GatewayTestFactory();
     }
@@ -68,6 +74,7 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_NOTIF", null);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_JOB", null);
         Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_AI", null);
+        Environment.SetEnvironmentVariable("GATEWAY_UPSTREAM_SEARCH", null);
         await _stub.DisposeAsync();
     }
 
@@ -475,5 +482,51 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         Assert.Equal("Authenticated", routes["notifications"].AuthorizationPolicy);
         // Unset Order sorts last in YARP, so the webhook (Order -1) must beat the unordered catch-all.
         Assert.True(routes["notifications-telegram-webhook"].Order < (routes["notifications"].Order ?? int.MaxValue));
+    }
+
+    // ---- Search: index writes are internal-only and must not be routed through the public gateway ----
+
+    [Theory]
+    [InlineData("POST", "/api/search/index")]
+    [InlineData("POST", "/api/search/bulk-index")]
+    [InlineData("DELETE", "/api/search/index/6f1b2c3d-0000-4000-8000-000000000005")]
+    public async Task SearchIndexWrites_AreNotForwarded_WithOrWithoutToken(string method, string path)
+    {
+        // The search catch-all is GET/HEAD only, so YARP answers 405 and nothing reaches search-svc.
+        using var client = CreateClient();
+
+        var anonymous = await client.SendAsync(Request(method, path, role: null));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, anonymous.StatusCode);
+
+        var admin = await client.SendAsync(Request(method, path, "Admin"));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, admin.StatusCode);
+
+        Assert.DoesNotContain($"{method} {path}", _forwarded);
+    }
+
+    [Theory]
+    [InlineData("GET", "/api/search/jobs")]
+    [InlineData("HEAD", "/api/search/suggest")]
+    public async Task SearchReads_StayOpenAndAreForwarded(string method, string path)
+    {
+        // Positive control for the test above: read methods on the same route still reach search-svc.
+        using var client = CreateClient();
+        var response = await client.SendAsync(Request(method, path, role: null));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains($"{method} {path}", _forwarded);
+    }
+
+    [Fact]
+    public void RouteConfig_SearchRouteIsAnonymousReadOnly()
+    {
+        var config = _factory.Services.GetRequiredService<IProxyConfigProvider>().GetConfig();
+
+        var searchRoutes = config.Routes.Where(r => r.Match.Path?.StartsWith("/api/search", StringComparison.Ordinal) == true).ToList();
+        var route = Assert.Single(searchRoutes);
+        Assert.Equal("search", route.ClusterId);
+        Assert.Null(route.AuthorizationPolicy);
+        Assert.NotNull(route.Match.Methods);
+        Assert.Equal(new[] { "GET", "HEAD" }, route.Match.Methods.OrderBy(m => m, StringComparer.Ordinal));
     }
 }
