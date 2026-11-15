@@ -107,7 +107,11 @@ builder.Services.Configure<ForwardedHeadersOptions>(o =>
     o.ForwardLimit = 1; // Cloud
 });
 
-// Coarse DDoS/bot layer: per-IP 600/min fixed window on every request (incl. YARP).
+// Coarse DDoS/bot layer: per-IP fixed window on every request (incl. YARP).
+var rateLimitPerMinute = builder.Configuration.GetValue("GATEWAY_RATE_LIMIT_PER_MINUTE", 600);
+if (rateLimitPerMinute <= 0)
+    throw new InvalidOperationException("GATEWAY_RATE_LIMIT_PER_MINUTE must be a positive integer.");
+
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -133,7 +137,7 @@ builder.Services.AddRateLimiter(options =>
             partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             factory: _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 600,
+                PermitLimit = rateLimitPerMinute,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0
             }));
