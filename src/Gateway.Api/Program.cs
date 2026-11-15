@@ -1,5 +1,4 @@
 using System.Text;
-using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
@@ -10,6 +9,8 @@ using Yarp.ReverseProxy.Transforms;
 using System.Security.Claims;
 using OpenTelemetry.Metrics;
 using Gateway.Api.Auth;
+using Gateway.Api.Network;
+using Gateway.Api.RateLimiting;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -110,54 +111,25 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Recruiter", policy => policy.RequireClaim(ClaimTypes.Role, "Recruiter"))
     .AddPolicy("User", policy => policy.RequireClaim(ClaimTypes.Role, "User"));
 
-// ForwardedHeaders — behind Render edge so RemoteIpAddress reflects the real
-// client IP (required for the per-IP limiter below to partition correctly).
+// ForwardedHeaders: only the proxy network in ForwardedHeaders:KnownNetworks may set
+// X-Forwarded-For / X-Forwarded-Proto. Resolved eagerly so a bad or missing value fails startup.
+var forwardedProxyNetworks = ForwardedProxyTrust.ReadNetworks(builder.Configuration, builder.Environment.IsProduction());
 builder.Services.Configure<ForwardedHeadersOptions>(o =>
 {
     o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-    o.KnownIPNetworks.Clear();
-    o.KnownProxies.Clear();
-    o.ForwardLimit = 1; // Cloud
+    o.ForwardLimit = 1; // Right-most entry only: the entry our trusted proxy appended.
+    ForwardedProxyTrust.Apply(o, forwardedProxyNetworks);
 });
 
-// Coarse DDoS/bot layer: per-IP fixed window on every request (incl. YARP).
+// Coarse DDoS/bot layer: per-client fixed window on every request (incl. YARP). Counters live in Redis
+// (see RedisRateLimitStore) so the limit holds across replicas.
 var rateLimitPerMinute = builder.Configuration.GetValue("GATEWAY_RATE_LIMIT_PER_MINUTE", 600);
 if (rateLimitPerMinute <= 0)
     throw new InvalidOperationException("GATEWAY_RATE_LIMIT_PER_MINUTE must be a positive integer.");
+builder.Services.Configure<RateLimitOptions>(o => o.PermitLimit = rateLimitPerMinute);
 
-builder.Services.AddRateLimiter(options =>
-{
-    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.OnRejected = async (context, token) =>
-    {
-        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
-        {
-            context.HttpContext.Response.Headers.RetryAfter =
-                ((int)Math.Max(1, retryAfter.TotalSeconds)).ToString();
-        }
-
-        context.HttpContext.Response.ContentType = "application/json";
-        await context.HttpContext.Response.WriteAsJsonAsync(new
-        {
-            status = 429,
-            title = "Too Many Requests",
-            detail = "Quota exceeded. Please wait before retrying."
-        }, cancellationToken: token);
-    };
-
-    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = rateLimitPerMinute,
-                Window = TimeSpan.FromMinutes(1),
-                QueueLimit = 0
-            }));
-});
-
-// Access-token revocation store: Redis (same instance and key format as auth-svc) when configured,
-// in-memory for local development. Production must configure Redis.
+// Shared Redis connection (revocation cache and rate-limit counters). Created lazily on first use so a
+// Redis outage does not block startup; Redis is required in Production (checked below).
 var redisUrl = builder.Configuration["REDIS_URL"];
 if (!string.IsNullOrWhiteSpace(redisUrl))
 {
@@ -169,14 +141,17 @@ if (!string.IsNullOrWhiteSpace(redisUrl))
         redisOptions.DefaultDatabase = redisDb;
     redisOptions.AbortOnConnectFail = false;
 
-    builder.Services.AddStackExchangeRedisCache(o => o.ConfigurationOptions = redisOptions);
+    var redisConnection = new Lazy<Task<IConnectionMultiplexer>>(async () => await ConnectionMultiplexer.ConnectAsync(redisOptions));
+    builder.Services.AddStackExchangeRedisCache(o => o.ConnectionMultiplexerFactory = () => redisConnection.Value);
+    builder.Services.AddSingleton<IRateLimitStore>(_ => new RedisRateLimitStore(redisConnection));
 }
 else
 {
     if (builder.Environment.IsProduction())
-        throw new InvalidOperationException("REDIS_URL must be set in Production (required for access-token revocation).");
+        throw new InvalidOperationException("REDIS_URL must be set in Production (required for access-token revocation and rate limiting).");
 
     builder.Services.AddDistributedMemoryCache();
+    builder.Services.AddSingleton<IRateLimitStore, InMemoryRateLimitStore>();
 }
 builder.Services.AddSingleton<ITokenRevocationStore, TokenRevocationStore>();
 
@@ -263,17 +238,17 @@ app.Use(async (context, next) =>
     context.Response.Headers["Referrer-Policy"] = "no-referrer";
     context.Response.Headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'";
 
-    // Enforce HSTS (30 days) per RFC 6797: only over HTTPS connections in non-Development environments
+    // HSTS matches the edge (Caddy): one year, includeSubDomains. Sent only over HTTPS outside Development.
     if (!app.Environment.IsDevelopment() && context.Request.IsHttps)
     {
-        context.Response.Headers["Strict-Transport-Security"] = "max-age=2592000";
+        context.Response.Headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
     }
 
     await next();
 });
 
 app.UseCors("Default");
-app.UseRateLimiter();
+app.UseMiddleware<RateLimitMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 

@@ -12,6 +12,7 @@ public class RedisConfigurationTests
         {
             builder.UseEnvironment("Production");
             builder.UseSetting("Jwt:Secret", GatewayTestFactory.TestJwtSecret);
+            builder.UseSetting("ForwardedHeaders:KnownNetworks", "10.0.0.0/8");
             builder.UseSetting("REDIS_URL", string.Empty);
         });
 
