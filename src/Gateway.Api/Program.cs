@@ -150,6 +150,7 @@ builder.Services.AddReverseProxy()
 
             utc.ProxyRequest.Headers.Remove("X-User-Id");
             utc.ProxyRequest.Headers.Remove("X-User-Role");
+            utc.ProxyRequest.Headers.Remove("X-User-Company");
 
             // Propagate the (validated/generated) correlation id to upstream services.
             utc.ProxyRequest.Headers.Remove(CorrelationIdMiddleware.HeaderName);
@@ -173,6 +174,13 @@ builder.Services.AddReverseProxy()
                 if (!string.IsNullOrEmpty(role))
                 {
                     utc.ProxyRequest.Headers.TryAddWithoutValidation("X-User-Role", role);
+                }
+
+                // Recruiter's company (JWT company_id). Dev-auth services read it for ownership checks.
+                var company = user.FindFirst("company_id")?.Value;
+                if (!string.IsNullOrEmpty(company))
+                {
+                    utc.ProxyRequest.Headers.TryAddWithoutValidation("X-User-Company", company);
                 }
             }
 
