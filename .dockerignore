@@ -1,0 +1,49 @@
+# The image build runs `COPY . .` after restoring, so everything not listed
+# here is copied into the build stage. On the documented local path (infra
+# compose sets SERVICES_SRC=..) the working tree contains .env with the dev
+# secrets -- including the RS256 signing key -- plus bin/, obj/ and test
+# output. Any of that would be baked into an image layer. Keep only what
+# `dotnet publish src/Gateway.Api/Gateway.Api.csproj` needs (note:
+# Gateway.sln is copied explicitly before `COPY . .`, so it must stay).
+
+# VCS / editor metadata
+.git
+.gitignore
+.github
+**/.vs/
+**/.vscode/
+**/*.user
+**/*.csproj.user
+*.swp
+
+# Secrets and env files
+.env
+.env.*
+*.env
+.env.bak.*
+*.bak
+INFISICAL_TOKEN
+mise.toml
+mise.toml.local
+
+# Build output
+**/bin/
+**/obj/
+*.nupkg
+.verification-packages/
+
+# Test output
+TestResults/
+coverage/
+*.trx
+*.coverage
+*.coveragexml
+
+# Runtime/local noise
+*.db
+*.log
+local-feed/
+
+# Not needed by the build
+README.md
+tests/
