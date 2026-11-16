@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -36,11 +37,14 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
     private WebApplication _stub = null!;
     private string _stubAddress = null!;
     private GatewayTestFactory _factory = null!;
+    // Held open after the first SSE frame so a test can prove the gateway forwarded it instead of buffering.
+    private TaskCompletionSource _sseGate = null!;
     // "METHOD /path" for every request the downstream stub receives, so tests can prove a request was not forwarded.
     private readonly ConcurrentQueue<string> _forwarded = new();
 
     public async Task InitializeAsync()
     {
+        _sseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         _stub = builder.Build();
@@ -48,6 +52,19 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         _stub.Run(async ctx =>
         {
             forwarded.Enqueue($"{ctx.Request.Method} {ctx.Request.Path}");
+            if (ctx.Request.Path == "/api/ai/chat")
+            {
+                // ai-svc's SSE shape: text/event-stream, no Content-Length, no-cache, one block per event.
+                ctx.Response.StatusCode = StatusCodes.Status200OK;
+                ctx.Response.ContentType = "text/event-stream";
+                ctx.Response.Headers.CacheControl = "no-cache";
+                ctx.Response.Headers["X-Accel-Buffering"] = "no";
+                await ctx.Response.WriteAsync("event: token\ndata: {\"delta\":\"Một\"}\n\n");
+                await ctx.Response.Body.FlushAsync();
+                await _sseGate.Task.WaitAsync(TimeSpan.FromSeconds(10)); // 10 s cap so a failure cannot hang the suite
+                await ctx.Response.WriteAsync("event: done\ndata: {\"sessionId\":\"s-1\",\"done\":true}\n\n");
+                return;
+            }
             ctx.Response.StatusCode = StatusCodes.Status200OK;
             await ctx.Response.WriteAsJsonAsync(new
             {
@@ -358,6 +375,12 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
 
         var clusters = config.Clusters.ToDictionary(c => c.ClusterId);
         Assert.Contains(clusters["ai"].Destinations!, d => d.Value.Address == _stubAddress);
+
+        // SSE: response buffering must stay off and the idle window must outlast YARP's 100 s default.
+        var aiRequest = clusters["ai"].HttpRequest;
+        Assert.NotNull(aiRequest);
+        Assert.False(aiRequest.AllowResponseBuffering);
+        Assert.Equal(TimeSpan.FromMinutes(5), aiRequest.ActivityTimeout);
     }
 
     [Fact]
@@ -378,6 +401,42 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
         var body = await response.Content.ReadAsStringAsync();
         Assert.Contains("\"path\":\"/api/ai/score-resume\"", body);
         Assert.Contains("\"userId\":\"cand-1\"", body);
+    }
+
+    [Fact]
+    public async Task AiChat_StreamsSseThroughTheGatewayWithoutBuffering()
+    {
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", CreateToken(sub: "cand-sse", role: "User"));
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/ai/chat")
+        {
+            Content = JsonContent.Create(new { message = "tìm việc Java ở Hà Nội", stream = true })
+        };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+        Assert.Null(response.Content.Headers.ContentLength); // chunked: SSE has no length up front
+        Assert.Contains("no-cache", response.Headers.CacheControl?.ToString() ?? string.Empty);
+        Assert.Equal("no", Assert.Single(response.Headers.GetValues("X-Accel-Buffering")));
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cts.Token);
+        using var reader = new StreamReader(stream);
+        Assert.Equal("event: token", await reader.ReadLineAsync(cts.Token));
+        Assert.Equal("data: {\"delta\":\"Một\"}", await reader.ReadLineAsync(cts.Token));
+
+        // The stub is still holding the stream open, so the first frame can only be here now if the
+        // gateway forwarded it as it arrived instead of buffering the whole response.
+        Assert.False(_sseGate.Task.IsCompleted);
+        Assert.Contains("POST /api/ai/chat", _forwarded);
+
+        _sseGate.SetResult();
+        var rest = await reader.ReadToEndAsync(cts.Token);
+        Assert.Contains("event: done", rest);
+        Assert.Contains("\"sessionId\":\"s-1\"", rest);
     }
 
     // ---- PBL6-44: role policies -------------------------------------------------
