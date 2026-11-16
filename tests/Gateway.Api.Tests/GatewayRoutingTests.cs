@@ -707,6 +707,49 @@ public sealed class GatewayRoutingTests : IAsyncLifetime
             .GetConfig().Routes.ToDictionary(r => r.RouteId);
         Assert.Null(routes["companies"].AuthorizationPolicy);
         Assert.Equal(new[] { "GET", "HEAD" }, routes["companies"].Match.Methods!.OrderBy(m => m, StringComparer.Ordinal));
+        // GET /api/companies/mine carries identity and must not fall into that anonymous catch-all.
+        Assert.Equal("Recruiter", routes["companies-mine"].AuthorizationPolicy);
+        Assert.Equal("job", routes["companies-mine"].ClusterId);
+    }
+
+    // ---- GET /api/companies/mine: recruiter-only, so the anonymous companies catch-all cannot swallow it ----
+
+    [Fact]
+    public async Task CompaniesMine_Anonymous_Returns401AndIsNotForwarded()
+    {
+        using var client = CreateClient();
+
+        var response = await client.SendAsync(Request("GET", "/api/companies/mine", role: null));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.DoesNotContain("GET /api/companies/mine", _forwarded);
+    }
+
+    [Theory]
+    [InlineData("User")]
+    [InlineData("Admin")]
+    public async Task CompaniesMine_NonRecruiter_Returns403AndIsNotForwarded(string role)
+    {
+        using var client = CreateClient();
+
+        var response = await client.SendAsync(Request("GET", "/api/companies/mine", role));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.DoesNotContain("GET /api/companies/mine", _forwarded);
+    }
+
+    [Fact]
+    public async Task CompaniesMine_Recruiter_IsForwardedWithIdentity()
+    {
+        using var client = CreateClient();
+
+        var response = await client.SendAsync(Request("GET", "/api/companies/mine", "Recruiter"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("GET /api/companies/mine", _forwarded);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("\"userRole\":\"Recruiter\"", body);
+        Assert.Contains("\"userId\":\"user-123\"", body);
     }
 
     // ---- Invite codes: issue is a Recruiter write on the job cluster; auth-svc's internal endpoints are never public ----

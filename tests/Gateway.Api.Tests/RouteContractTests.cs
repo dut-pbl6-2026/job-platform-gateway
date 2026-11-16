@@ -28,6 +28,7 @@ public class RouteContractTests : IClassFixture<GatewayTestFactory>
             "companies-join-requests-decide|job|/api/companies/{id:guid}/join-requests/{**catch-all}||Recruiter|",
             "companies-me-join-request|job|/api/companies/me/join-request||Authenticated|",
             "companies-me-join-request-escalate|job|/api/companies/me/join-request/escalate||Authenticated|",
+            "companies-mine|job|/api/companies/mine|GET|Recruiter|",
             "companies-update|job|/api/companies/{id:guid}|PUT|Recruiter|",
             "health-auth|auth|/health/auth|||",
             "jobs|job|/api/jobs/{**catch-all}|GET|HEAD||",
