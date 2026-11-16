@@ -14,3 +14,14 @@
 - `GET /health/ready` — readiness: proxy routes/clusters loaded. Set `HEALTH_READY_CHECK_UPSTREAMS=true` to also probe upstream `/health` endpoints (reported as `Degraded`, never fails readiness).
 - Logging: Serilog, compact JSON on console outside Development. Every request gets an `X-Correlation-Id` (taken from the request if safe, generated otherwise, echoed in the response, attached to log lines). Authorization headers/tokens are never logged.
 - SonarCloud (optional): CI runs `dotnet-sonarscanner` only when the `SONAR_TOKEN` secret is available (skipped on fork PRs). Optional repo variables `SONAR_ORGANIZATION` (default `dut-pbl6-2026`) and `SONAR_PROJECT_KEY` (default `dut-pbl6-2026_job-platform-gateway`).
+
+## Forwarded identity headers
+
+After JWT validation YARP strips any client-supplied copy and sets `X-User-Id`, `X-User-Role`,
+`X-User-Company`, `X-User-Email` and `X-User-Name` from the verified claims. The display name is
+percent-encoded because HTTP headers are ASCII; dev-auth services decode it. These headers are for
+services that trust the gateway only (app-svc in Development).
+
+Gateway routes for engagement: `/api/interviews/{**catch-all}` and
+`/api/email-templates/{**catch-all}` proxy to the app cluster with the `Authenticated` policy;
+`/api/applications` already covers `POST /api/applications/{id}/email`.

@@ -175,6 +175,8 @@ builder.Services.AddReverseProxy()
             utc.ProxyRequest.Headers.Remove("X-User-Id");
             utc.ProxyRequest.Headers.Remove("X-User-Role");
             utc.ProxyRequest.Headers.Remove("X-User-Company");
+            utc.ProxyRequest.Headers.Remove("X-User-Email");
+            utc.ProxyRequest.Headers.Remove("X-User-Name");
 
             // Propagate the (validated/generated) correlation id to upstream services.
             utc.ProxyRequest.Headers.Remove(CorrelationIdMiddleware.HeaderName);
@@ -205,6 +207,24 @@ builder.Services.AddReverseProxy()
                 if (!string.IsNullOrEmpty(company))
                 {
                     utc.ProxyRequest.Headers.TryAddWithoutValidation("X-User-Company", company);
+                }
+
+                // Candidate identity for applications and email: app-svc snapshots these on submission.
+                // Only values from the verified token are forwarded; client-sent copies were removed above.
+                var email = user.FindFirst(ClaimTypes.Email)?.Value
+                            ?? user.FindFirst("email")?.Value;
+                if (!string.IsNullOrEmpty(email))
+                {
+                    utc.ProxyRequest.Headers.TryAddWithoutValidation("X-User-Email", email);
+                }
+
+                var name = user.FindFirst("full_name")?.Value
+                           ?? user.FindFirst(ClaimTypes.Name)?.Value
+                           ?? user.FindFirst("name")?.Value;
+                if (!string.IsNullOrEmpty(name))
+                {
+                    // HTTP headers are ASCII: percent-encode the UTF-8 display name. app-svc decodes it.
+                    utc.ProxyRequest.Headers.TryAddWithoutValidation("X-User-Name", Uri.EscapeDataString(name));
                 }
             }
 
